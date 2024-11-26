@@ -439,10 +439,16 @@ int main(int argc, char *argv[]) {
     for(const auto& id : features.nexuses()) {
         #if NGEN_WITH_MPI
         if (mpi_num_procs > 1) {
+          if (manager->remotes_enabled() == true) {
             if (!features.is_remote_sender_nexus(id)) {
                 nexus_outfiles[id].open(manager->get_output_root() + id + "_output.csv", std::ios::trunc);
             }
-        } else {
+          }
+          else {
+          nexus_outfiles[id].open(manager->get_output_root() + id + "_rank_" + std::to_string(mpi_rank) + "_output.csv", std::ios::trunc);
+          }
+        }
+        else {
           nexus_outfiles[id].open(manager->get_output_root() + id + "_output.csv", std::ios::trunc);
         }
         #else
@@ -558,57 +564,76 @@ int main(int argc, char *argv[]) {
     } //done time
 
 #if NGEN_WITH_MPI
-    MPI_Barrier(MPI_COMM_WORLD);
-#endif
+    MPI_Request barrier_request;
+    MPI_Ibarrier(MPI_COMM_WORLD, &barrier_request);
 
-    if (mpi_rank == 0)
-    {
-        std::cout << "Finished " << manager->Simulation_Time_Object->get_total_output_times() << " timesteps." << std::endl;
-    }
+    int flag = 0;
+    const int sleep_microseconds = 100000;  // 100 millisecond sleep
 
-    auto time_done_simulation = std::chrono::steady_clock::now();
-    std::chrono::duration<double> time_elapsed_simulation = time_done_simulation - time_done_init;
-
-#if NGEN_WITH_MPI
-    MPI_Barrier(MPI_COMM_WORLD);
-#endif
-
-#if NGEN_WITH_ROUTING
-    if (mpi_rank == 0)
-    { // Run t-route from single process
-        if(manager->get_using_routing()) {
-          //Note: Currently, delta_time is set in the t-route yaml configuration file, and the
-          //number_of_timesteps is determined from the total number of nexus outputs in t-route.
-          //It is recommended to still pass these values to the routing_py_adapter object in
-          //case a future implmentation needs these two values from the ngen framework.
-          int number_of_timesteps = manager->Simulation_Time_Object->get_total_output_times();
-
-          int delta_time = manager->Simulation_Time_Object->get_output_interval_seconds();
-          
-          router->route(number_of_timesteps, delta_time); 
+    // Wait for all ranks to reach the barrier
+    while (!flag) {
+        MPI_Test(&barrier_request, &flag, MPI_STATUS_IGNORE);
+        if (!flag) {
+            usleep(sleep_microseconds);
         }
     }
 #endif
+    if (mpi_rank == 0) {    
+      std::cout << "Finished " << manager->Simulation_Time_Object->get_total_output_times() << " timesteps." << std::endl;
 
-    auto time_done_routing = std::chrono::steady_clock::now();
-    std::chrono::duration<double> time_elapsed_routing = time_done_routing - time_done_simulation;
+      auto time_done_simulation = std::chrono::steady_clock::now();
+      std::chrono::duration<double> time_elapsed_simulation = time_done_simulation - time_done_init;
 
-    if (mpi_rank == 0)
-    {
-        std::cout << "NGen top-level timings:"
-                  << "\n\tNGen::init: " << time_elapsed_init.count()
-                  << "\n\tNGen::simulation: " << time_elapsed_simulation.count()
+
+
 #if NGEN_WITH_ROUTING
-                  << "\n\tNGen::routing: " << time_elapsed_routing.count()
+      if(manager->get_using_routing()) {
+        //Note: Currently, delta_time is set in the t-route yaml configuration file, and the
+        //number_of_timesteps is determined from the total number of nexus outputs in t-route.
+        //It is recommended to still pass these values to the routing_py_adapter object in
+        //case a future implmentation needs these two values from the ngen framework.
+        int number_of_timesteps = manager->Simulation_Time_Object->get_total_output_times();
+
+        int delta_time = manager->Simulation_Time_Object->get_output_interval_seconds();
+        
+        router->route(number_of_timesteps, delta_time); 
+      }
 #endif
-                  << std::endl;
+
+      auto time_done_routing = std::chrono::steady_clock::now();
+      std::chrono::duration<double> time_elapsed_routing = time_done_routing - time_done_simulation;
+
+      std::cout << "NGen top-level timings:"
+                << "\n\tNGen::init: " << time_elapsed_init.count()
+                << "\n\tNGen::simulation: " << time_elapsed_simulation.count()
+                #if NGEN_WITH_ROUTING
+                << "\n\tNGen::routing: " << time_elapsed_routing.count()
+                #endif
+                << std::endl;
+      #if NGEN_WITH_MPI
+      for (int i = 1; i < mpi_num_procs; ++i) {
+          MPI_Send(NULL, 0, MPI_INT, i, 0, MPI_COMM_WORLD);
+      }
     }
-
-  manager->finalize();
-
-#if NGEN_WITH_MPI
+    else {
+    // Non-root processes
+    MPI_Request recv_request;
+    MPI_Irecv(NULL, 0, MPI_INT, 0, 0, MPI_COMM_WORLD, &recv_request);
+    
+    int recv_flag = 0;
+    while (!recv_flag) {
+        MPI_Test(&recv_request, &recv_flag, MPI_STATUS_IGNORE);
+        if (!recv_flag) {
+            usleep(sleep_microseconds);
+        }
+    }
+    #endif
+    }
+    
+    manager->finalize();
+    #if NGEN_WITH_MPI
     MPI_Finalize();
-#endif
+    #endif
 
     return 0;
 }

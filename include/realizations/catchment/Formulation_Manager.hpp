@@ -318,6 +318,59 @@ namespace realization {
  
                 //for case where there is no output_root in the realization file
                 return "./";
+
+            }
+
+             /**
+             * @brief Check if the formulation has catchment output writing enabled
+             *
+             * @code{.cpp}
+             * // Example config:
+             * // ...
+             * // "write_catchment_output": false
+             * // ...
+             * const auto manager = Formulation_Manger(CONFIG);
+             * manager.get_output_root();
+             * //> false
+             * @endcode
+             * 
+             * @return bool
+             */
+            bool write_catchment_output() const {
+                const auto write_catchment_output = this->tree.get_optional<std::string>("write_catchment_output");
+                if (write_catchment_output != boost::none && *write_catchment_output != "") {
+                    // if any variation of "false" or "no" or 0 is found, return false
+                    if (write_catchment_output->compare("false") == 0 || write_catchment_output->compare("no") == 0 || write_catchment_output->compare("0") == 0) {
+                        return false;
+                    }
+                } 
+                return true;
+            }
+
+             /**
+             * @brief Check if the formulation uses remote partitioning for mpi partitions
+             *
+             * @code{.cpp}
+             * // Example config:
+             * // ...
+             * // "remotes_enabled": false
+             * // ...
+             * const auto manager = Formulation_Manger(CONFIG);
+             * manager.get_output_root();
+             * //> false
+             * @endcode
+             * 
+             * @return bool
+             */
+            bool remotes_enabled() const {
+                const auto remotes_enabled = this->tree.get_optional<std::string>("remotes_enabled");
+                if (remotes_enabled != boost::none && *remotes_enabled != "") {
+                    // if any variation of "false" or "no" or 0 is found, return false
+                    if (remotes_enabled->compare("false") == 0 || remotes_enabled->compare("no") == 0 || remotes_enabled->compare("0") == 0) {
+                        return false;
+                    }
+                } 
+                return true;
             }
 
             /**
@@ -395,9 +448,27 @@ namespace realization {
             }
 
             forcing_params get_forcing_params(const geojson::PropertyMap &forcing_prop_map, std::string identifier, simulation_time_params &simulation_time_config) {
+                int rank = 0;
+                bool enable_cache = true;
+                #if NGEN_WITH_MPI
+                MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+                #endif
+
+                if (forcing_prop_map.count("enable_cache") != 0) {
+                    enable_cache = forcing_prop_map.at("enable_cache").as_boolean();
+                }
+
                 std::string path = "";
                 if(forcing_prop_map.count("path") != 0){
                     path = forcing_prop_map.at("path").as_string();
+                    int id_index = path.find("{{id}}");
+                    int partition_id_index = path.find("{{partition_id}}");
+                    if (id_index != std::string::npos) {
+                        path = path.replace(id_index, sizeof("{{id}}") - 1, identifier);
+                    }
+                    if (partition_id_index != std::string::npos) {
+                        path = path.replace(partition_id_index, sizeof("{{partition_id}}") - 1, std::to_string(rank));
+                    }
                 }
                 std::string provider;
                 if(forcing_prop_map.count("provider") != 0){
@@ -408,7 +479,8 @@ namespace realization {
                         path,
                         provider,
                         simulation_time_config.start_time,
-                        simulation_time_config.end_time
+                        simulation_time_config.end_time,
+                        enable_cache
                     );
                 }
 
@@ -497,7 +569,8 @@ namespace realization {
                                     path + entry->d_name,
                                     provider,
                                     simulation_time_config.start_time,
-                                    simulation_time_config.end_time
+                                    simulation_time_config.end_time,
+                                    enable_cache
                                 );
                             }
                             else if ( entry->d_type == DT_UNKNOWN )
@@ -516,7 +589,8 @@ namespace realization {
                                         path + entry->d_name,
                                         provider,
                                         simulation_time_config.start_time,
-                                        simulation_time_config.end_time
+                                        simulation_time_config.end_time,
+                                        enable_cache
                                     );
                                 }
                                 throw std::runtime_error("Forcing data is path "+path+entry->d_name+" is not a file");
