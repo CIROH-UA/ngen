@@ -8,7 +8,7 @@ import multiprocessing
 def get_cat_to_nex_flowpairs(hydrofabric: Path) -> list:
     with sqlite3.connect(f"{hydrofabric}") as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT divide_id, toid FROM divides")
+        cursor.execute("SELECT divide_id, toid FROM divides WHERE type IS NOT 'coastal'")
         cat_to_nex_pairs = cursor.fetchall()
     return cat_to_nex_pairs
 
