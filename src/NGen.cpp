@@ -19,6 +19,7 @@
 #include <FileChecker.h>
 #include <boost/algorithm/string.hpp>
 #include <boost/range/algorithm/sort.hpp>
+#include <boost/redis/src.hpp>
 
 #ifdef WRITE_PID_FILE_FOR_GDB_SERVER
 #include <unistd.h>

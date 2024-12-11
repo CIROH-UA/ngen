@@ -109,7 +109,7 @@ endif()
 
 # -----------------------------------------------------------------------------
 # Set global C++ options
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 
@@ -165,7 +165,13 @@ add_compile_definitions(NGEN_SHARED_LIB_EXTENSION)
 set(Boost_USE_STATIC_LIBS OFF)
 set(Boost_USE_MULTITHREADED ON)
 set(Boost_USE_STATIC_RUNTIME OFF)
-find_package(Boost 1.79.0 REQUIRED)
+find_package(Boost 1.84.0 REQUIRED)
+
+find_package(OpenSSL REQUIRED)
+target_link_libraries(ngen 
+    PRIVATE
+    OpenSSL::SSL 
+)
 
 # -----------------------------------------------------------------------------
 if(NGEN_WITH_SQLITE)
