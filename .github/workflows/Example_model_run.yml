@@ -4,7 +4,7 @@ on:
   push:
     branches: [ release-* ]
   pull_request:
-    branches: [ master, release-* ]
+    branches: [ main, release-* ]
 jobs:
     Build_and_Run_Model:
       runs-on: ubuntu-latest

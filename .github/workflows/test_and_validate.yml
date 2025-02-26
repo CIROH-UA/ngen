@@ -1,13 +1,13 @@
-# Test changes that have been pushed to the master and dev branches
+# Test changes that have been pushed to the main and dev branches
 
 name: Testing and Validation
 
 # Controls when the action will run.
 on:
   push:
-    branches: [ master, dev, notreal, release-* ]
+    branches: [ main, dev, notreal, release-* ]
   pull_request:
-    branches: [ master, dev, notreal, release-* ]
+    branches: [ main, dev, notreal, release-* ]
   workflow_dispatch:
 
 env:

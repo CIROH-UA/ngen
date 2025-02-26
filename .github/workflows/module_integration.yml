@@ -3,9 +3,9 @@ name: Module Integration Tests
 # Controls when the action will run.
 on:
   push:
-    branches: [ master, dev, notreal, release-* ]
+    branches: [ main, dev, notreal, release-* ]
   pull_request:
-    branches: [ master, dev, notreal, release-* ]
+    branches: [ main, dev, notreal, release-* ]
   workflow_dispatch:
 
 env:
@@ -87,7 +87,7 @@ jobs:
       #    path: .venv
       #    key: linux-troute-dep-fixed
 
-      - name: Checkout t-route (latest master)
+      - name: Checkout t-route (latest main)
         uses: actions/checkout@v3
         with:
           repository: NOAA-OWP/t-route
