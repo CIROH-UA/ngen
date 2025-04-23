@@ -247,7 +247,7 @@ if(NGEN_WITH_BMI_C)
         add_external_subdirectory(
             SOURCE     "${NGEN_EXT_DIR}/lgar"
             OUTPUT     "${NGEN_EXT_DIR}/lgar/cmake_build"
-            GIT_UPDATE "${NGEN_EXT_DIR}/lgar/lgar"
+            GIT_UPDATE "${NGEN_EXT_DIR}/lgar/LGAR-C"
             IMPORTS    lasambmi
         )
     endif()
