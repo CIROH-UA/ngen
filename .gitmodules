@@ -46,9 +46,6 @@
 [submodule "extern/lstm/lstm"]
 	path = extern/lstm/lstm
 	url = https://github.com/CIROH-UA/lstm
-[submodule "extern/LGAR-C"]
-	path = extern/LGAR-C
-	url = git@github.com:NOAA-OWP/LGAR-C.git
 [submodule "extern/lgar-c/LGAR-C"]
 	path = extern/lgar-c/LGAR-C
-	url = git@github.com:NOAA-OWP/LGAR-C.git
+	url = https://github.com/NOAA-OWP/LGAR-C.git
