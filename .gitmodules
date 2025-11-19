@@ -49,3 +49,7 @@
 [submodule "extern/lgar-c/LGAR-C"]
 	path = extern/lgar-c/LGAR-C
 	url = https://github.com/NOAA-OWP/LGAR-C.git
+[submodule "extern/summa/summa"]
+	path = extern/summa/summa
+	url = https://github.com/ashleymedin/summa
+	branch = develop
