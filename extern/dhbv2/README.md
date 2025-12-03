@@ -65,7 +65,7 @@ Then download model weights (and coupled normalization statistics file) from S3 
 
     aws s3 cp s3://mhpi-spatial/mhpi-release/models/owp/dhbv_2_hfv2.2_15y_daily.zip . --no-sign-request
     unzip 4-dhbv_2.zip -d /temp
-    mv /temp/. /ngen_resources/data/dhbv2/models/hfv2.2_15yr
+    mv /temp/dhbv_2_hfv2.2_15y_daily/. /ngen_resources/data/dhbv2/models/hfv2.2_15yr
     rm -r /temp
 
 Note: Other models made available will be located in `.dhbv2/models/` with a readme providing the specific S3 URI to use above.
