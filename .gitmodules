@@ -53,3 +53,6 @@
 	path = extern/summa/summa
 	url = https://github.com/ashleymedin/summa
 	branch = develop
+[submodule "extern/dhbv2/dhbv2"]
+	path = extern/dhbv2/dhbv2
+	url = https://github.com/mhpi/dhbv2
