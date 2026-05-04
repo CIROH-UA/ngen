@@ -56,6 +56,9 @@
 [submodule "extern/dhbv2/dhbv2"]
 	path = extern/dhbv2/dhbv2
 	url = https://github.com/mhpi/dhbv2
+[submodule "extern/sac-sma"]
+	path = extern/sac-sma
+	url = https://github.com/NOAA-OWP/sac-sma
 [submodule "extern/snow17"]
 	path = extern/snow17
 	url = https://github.com/NOAA-OWP/snow17
