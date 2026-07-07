@@ -45,7 +45,7 @@ add_library(lasambmi SHARED ${LGAR_SRC_PREFIX}src/bmi_lgar.cxx ${LGAR_SRC_PREFIX
         ${LGAR_SRC_PREFIX}src/util_funcs.cxx ${LGAR_SRC_PREFIX}src/aet.cxx ${LGAR_SRC_PREFIX}giuh/giuh.c ${LGAR_SRC_PREFIX}include/all.hxx ${LGAR_SRC_PREFIX}giuh/giuh.h)
 
 target_compile_definitions(lasambmi PRIVATE NGEN)
-target_include_directories(lasambmi PRIVATE include)
+target_include_directories(lasambmi PRIVATE ${LGAR_SRC_PREFIX}include)
 
 set_target_properties(lasambmi PROPERTIES VERSION ${PROJECT_VERSION})
 
