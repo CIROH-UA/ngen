@@ -19,23 +19,30 @@ message(CMAKE_CXX_COMPILER " ${CMAKE_CXX_COMPILER}")
 message(CMAKE_C_COMPILER " ${CMAKE_C_COMPILER}")
 message("CMAKE_BUILD_TYPE = ${CMAKE_BUILD_TYPE}")
 
+# Based on other submodules pattern, support relative paths from ngen
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/LGAR-C")
+    set(LGAR_SRC_PREFIX "LGAR-C/")
+else()
+    set(LGAR_SRC_PREFIX "")
+endif()
+
 # standalone
-add_executable(lasam_standalone ./src/bmi_main_lgar.cxx ./src/bmi_lgar.cxx ./src/lgar.cxx ./src/soil_funcs.cxx ./src/conceptual_reservoir.cxx
-            ./src/linked_list.cxx ./src/mem_funcs.cxx ./src/util_funcs.cxx ./src/aet.cxx
-            ./giuh/giuh.h ./giuh/giuh.c)
+add_executable(lasam_standalone ${LGAR_SRC_PREFIX}src/bmi_main_lgar.cxx ${LGAR_SRC_PREFIX}src/bmi_lgar.cxx ${LGAR_SRC_PREFIX}src/lgar.cxx ${LGAR_SRC_PREFIX}src/soil_funcs.cxx ${LGAR_SRC_PREFIX}src/conceptual_reservoir.cxx
+            ${LGAR_SRC_PREFIX}src/linked_list.cxx ${LGAR_SRC_PREFIX}src/mem_funcs.cxx ${LGAR_SRC_PREFIX}src/util_funcs.cxx ${LGAR_SRC_PREFIX}src/aet.cxx
+            ${LGAR_SRC_PREFIX}giuh/giuh.h ${LGAR_SRC_PREFIX}giuh/giuh.c)
 target_link_libraries(lasam_standalone PRIVATE m)
 
 # unittest
-add_executable(lasam_unitest ./tests/main_unit_test_bmi.cxx ./src/bmi_lgar.cxx ./src/lgar.cxx ./src/soil_funcs.cxx ./src/conceptual_reservoir.cxx
-            ./src/linked_list.cxx ./src/mem_funcs.cxx ./src/util_funcs.cxx ./src/aet.cxx ./giuh/giuh.h
-            ./giuh/giuh.c)
+add_executable(lasam_unitest ${LGAR_SRC_PREFIX}tests/main_unit_test_bmi.cxx ${LGAR_SRC_PREFIX}src/bmi_lgar.cxx ${LGAR_SRC_PREFIX}src/lgar.cxx ${LGAR_SRC_PREFIX}src/soil_funcs.cxx ${LGAR_SRC_PREFIX}src/conceptual_reservoir.cxx
+            ${LGAR_SRC_PREFIX}src/linked_list.cxx ${LGAR_SRC_PREFIX}src/mem_funcs.cxx ${LGAR_SRC_PREFIX}src/util_funcs.cxx ${LGAR_SRC_PREFIX}src/aet.cxx ${LGAR_SRC_PREFIX}giuh/giuh.h
+            ${LGAR_SRC_PREFIX}giuh/giuh.c)
 target_link_libraries(lasam_unitest PRIVATE m)
 
 # Make sure these are compiled with this directive
 add_compile_definitions(BMI_ACTIVE)
 
-add_library(lasambmi SHARED src/bmi_lgar.cxx src/lgar.cxx ./src/soil_funcs.cxx ./src/linked_list.cxx ./src/mem_funcs.cxx ./src/conceptual_reservoir.cxx
-        ./src/util_funcs.cxx ./src/aet.cxx ./giuh/giuh.c include/all.hxx ./giuh/giuh.h)
+add_library(lasambmi SHARED src/bmi_lgar.cxx src/lgar.cxx ${LGAR_SRC_PREFIX}src/soil_funcs.cxx ${LGAR_SRC_PREFIX}src/linked_list.cxx ${LGAR_SRC_PREFIX}src/mem_funcs.cxx ${LGAR_SRC_PREFIX}src/conceptual_reservoir.cxx
+        ${LGAR_SRC_PREFIX}src/util_funcs.cxx ${LGAR_SRC_PREFIX}src/aet.cxx ${LGAR_SRC_PREFIX}giuh/giuh.c include/all.hxx ${LGAR_SRC_PREFIX}giuh/giuh.h)
 
 target_compile_definitions(lasambmi PRIVATE NGEN)
 target_include_directories(lasambmi PRIVATE include)
