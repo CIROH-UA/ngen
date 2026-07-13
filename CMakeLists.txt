@@ -280,6 +280,8 @@ if(NGEN_WITH_BMI_C)
             GIT_UPDATE "${NGEN_EXT_DIR}/lgar-c/LGAR-C"
             IMPORTS    lasambmi
         )
+        # casam bmi function visibility is hidden without this fix
+        set_target_properties(lasambmi PROPERTIES CXX_VISIBILITY_PRESET default)
     endif()
 endif()
 
