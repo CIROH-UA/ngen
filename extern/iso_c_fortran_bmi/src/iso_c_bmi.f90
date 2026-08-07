@@ -14,8 +14,21 @@ module iso_c_bmif_2_0
   use, intrinsic :: iso_c_binding, only: c_ptr, c_loc, c_f_pointer, c_char, c_null_char, c_int, c_double, c_float, c_null_ptr
   implicit none
 
+  ! Cached itemsize/nbytes for one variable, populated once after initialize() so
+  ! get_value_*/set_value_* don't need to re-query the model every timestep.
+  ! name_len is the true (trimmed) length of name, computed once at cache-build
+  ! time, so lookups can bound their character comparison instead of scanning
+  ! the full BMI_MAX_VAR_NAME-sized buffer via trim()/compare_string every call.
+  type var_size_t
+    character(len=BMI_MAX_VAR_NAME) :: name = ''
+    integer :: name_len = 0
+    integer :: nbytes = 0
+    integer :: item_size = 0
+  end type var_size_t
+
   type box
     class(bmi), pointer :: ptr => null()
+    type(var_size_t), allocatable :: size_cache(:)
   end type
 
   contains
@@ -54,6 +67,89 @@ module iso_c_bmif_2_0
       c_string(n+1) = c_null_char !make sure to add null terminator
     end function f_to_c_string
 
+    ! Query the model once for every input/output variable's itemsize and nbytes and
+    ! stash them in bmi_box%size_cache. Called right after a successful initialize().
+    ! Best-effort: if any step fails, size_cache is left unallocated and callers fall
+    ! back to live model queries via lookup_var_size.
+    subroutine populate_size_cache(bmi_box)
+      type(box), intent(inout) :: bmi_box
+      character(len=BMI_MAX_VAR_NAME), pointer :: in_names(:), out_names(:)
+      integer :: bmi_status, n_in, n_out, i
+
+      bmi_status = bmi_box%ptr%get_input_item_count(n_in)
+      if (bmi_status .ne. BMI_SUCCESS) return
+      bmi_status = bmi_box%ptr%get_output_item_count(n_out)
+      if (bmi_status .ne. BMI_SUCCESS) return
+      if (n_in + n_out == 0) return
+
+      if (n_in > 0) then
+        bmi_status = bmi_box%ptr%get_input_var_names(in_names)
+        if (bmi_status .ne. BMI_SUCCESS) return
+      end if
+      if (n_out > 0) then
+        bmi_status = bmi_box%ptr%get_output_var_names(out_names)
+        if (bmi_status .ne. BMI_SUCCESS) return
+      end if
+
+      allocate(bmi_box%size_cache(n_in + n_out))
+
+      do i = 1, n_in
+        bmi_box%size_cache(i)%name = trim(in_names(i))
+        bmi_box%size_cache(i)%name_len = len_trim(in_names(i))
+        bmi_status = bmi_box%ptr%get_var_nbytes(trim(in_names(i)), bmi_box%size_cache(i)%nbytes)
+        bmi_status = bmi_box%ptr%get_var_itemsize(trim(in_names(i)), bmi_box%size_cache(i)%item_size)
+      end do
+
+      do i = 1, n_out
+        bmi_box%size_cache(n_in + i)%name = trim(out_names(i))
+        bmi_box%size_cache(n_in + i)%name_len = len_trim(out_names(i))
+        bmi_status = bmi_box%ptr%get_var_nbytes(trim(out_names(i)), bmi_box%size_cache(n_in + i)%nbytes)
+        bmi_status = bmi_box%ptr%get_var_itemsize(trim(out_names(i)), bmi_box%size_cache(n_in + i)%item_size)
+      end do
+    end subroutine populate_size_cache
+
+    ! Look up the cached (nbytes, item_size) pair for `name`. Falls back to a live
+    ! model query if the cache wasn't populated or doesn't contain this variable
+    ! (e.g. a model with a dynamic grid that changes size after initialize()).
+    !
+    ! Compares names by hand, bounded by the cached name_len, instead of
+    ! trim()/`==` on the BMI_MAX_VAR_NAME-sized buffer: trim() has to scan
+    ! backwards from position BMI_MAX_VAR_NAME to find the last non-blank
+    ! character on every call, which dominated runtime once this ran every
+    ! timestep for every variable.
+    function lookup_var_size(bmi_box, name, num_bytes, item_size) result(bmi_status)
+      type(box), intent(in) :: bmi_box
+      character(len=*), intent(in) :: name
+      integer, intent(out) :: num_bytes, item_size
+      integer :: bmi_status
+      integer :: i, j, n
+      logical :: is_match
+
+      if (allocated(bmi_box%size_cache)) then
+        n = len(name)
+        do i = 1, size(bmi_box%size_cache)
+          if (bmi_box%size_cache(i)%name_len /= n) cycle
+          is_match = .true.
+          do j = 1, n
+            if (bmi_box%size_cache(i)%name(j:j) /= name(j:j)) then
+              is_match = .false.
+              exit
+            end if
+          end do
+          if (is_match) then
+            num_bytes = bmi_box%size_cache(i)%nbytes
+            item_size = bmi_box%size_cache(i)%item_size
+            bmi_status = BMI_SUCCESS
+            return
+          end if
+        end do
+      end if
+
+      bmi_status = bmi_box%ptr%get_var_nbytes(name, num_bytes)
+      if (bmi_status .ne. BMI_SUCCESS) return
+      bmi_status = bmi_box%ptr%get_var_itemsize(name, item_size)
+    end function lookup_var_size
+
     ! Perform startup tasks for the model.
     function initialize(this, config_file) result(bmi_status) bind(C, name="initialize")
       type(c_ptr) :: this
@@ -69,6 +165,9 @@ module iso_c_bmif_2_0
       f_file = c_to_f_string(config_file)
       bmi_status = bmi_box%ptr%initialize(f_file)
       deallocate(f_file)
+      if (bmi_status == BMI_SUCCESS) then
+        call populate_size_cache(bmi_box)
+      end if
     end function initialize
 
     ! Advance the model one time step.
@@ -394,9 +493,7 @@ module iso_c_bmif_2_0
       f_str = c_to_f_string(name)
       ! Use variable metadata to determine the size of the array required to
       ! hold the variable.
-      bmi_status = bmi_box%ptr%get_var_nbytes(f_str, num_bytes)
-      if( bmi_status .ne. BMI_SUCCESS ) return
-      bmi_status = bmi_box%ptr%get_var_itemsize(f_str, item_size)
+      bmi_status = lookup_var_size(bmi_box, f_str, num_bytes, item_size)
       if( bmi_status .ne. BMI_SUCCESS ) return
       if( item_size .eq. 0 ) then
         ! cannot get a value no size, fail
@@ -426,9 +523,7 @@ module iso_c_bmif_2_0
       f_str = c_to_f_string(name)
       ! Use variable metadata to determine the size of the array required to
       ! hold the variable.
-      bmi_status = bmi_box%ptr%get_var_nbytes(f_str, num_bytes)
-      if( bmi_status .ne. BMI_SUCCESS ) return
-      bmi_status = bmi_box%ptr%get_var_itemsize(f_str, item_size)
+      bmi_status = lookup_var_size(bmi_box, f_str, num_bytes, item_size)
       if( bmi_status .ne. BMI_SUCCESS ) return
       if( item_size .eq. 0 ) then
         ! cannot get a value no size, fail
@@ -458,17 +553,15 @@ module iso_c_bmif_2_0
       f_str = c_to_f_string(name)
       ! Use variable metadata to determine the size of the array required to
       ! hold the variable.
-      bmi_status = bmi_box%ptr%get_var_nbytes(f_str, num_bytes)
+      bmi_status = lookup_var_size(bmi_box, f_str, num_bytes, item_size)
       if( bmi_status .ne. BMI_SUCCESS ) return
-      bmi_status = bmi_box%ptr%get_var_itemsize(f_str, item_size)
-      if( bmi_status .ne. BMI_SUCCESS ) return
-      num_items = num_bytes/item_size
       if( item_size .eq. 0 ) then
         ! cannot get a value no size, fail
         ! also prevents divide by 0 below
         bmi_status = BMI_FAILURE
         return
       endif
+      num_items = num_bytes/item_size
       bmi_status = bmi_box%ptr%get_value_double(f_str, dest(:num_items))
       deallocate(f_str)
     end function get_value_double
@@ -556,15 +649,13 @@ module iso_c_bmif_2_0
       f_str = c_to_f_string(name)
       ! Use variable metadata to determine the size of the array required to
       ! hold the variable.
-      bmi_status = bmi_box%ptr%get_var_nbytes(f_str, num_bytes)
-      if( bmi_status .ne. BMI_SUCCESS ) return
-      bmi_status = bmi_box%ptr%get_var_itemsize(f_str, item_size)
+      bmi_status = lookup_var_size(bmi_box, f_str, num_bytes, item_size)
       if( bmi_status .ne. BMI_SUCCESS ) return
       if( item_size .eq. 0 ) then
         ! we can attempt to set a value of 0 size
         ! but we need to avoid divide by 0
         num_items = 0
-      else 
+      else
         num_items = num_bytes/item_size
       endif
       !write(0,*) "set_value_int, grid_size: ", num_items
@@ -590,15 +681,13 @@ module iso_c_bmif_2_0
       f_str = c_to_f_string(name)
       ! Use variable metadata to determine the size of the array required to
       ! hold the variable.
-      bmi_status = bmi_box%ptr%get_var_nbytes(f_str, num_bytes)
-      if( bmi_status .ne. BMI_SUCCESS ) return
-      bmi_status = bmi_box%ptr%get_var_itemsize(f_str, item_size)
+      bmi_status = lookup_var_size(bmi_box, f_str, num_bytes, item_size)
       if( bmi_status .ne. BMI_SUCCESS ) return
       if( item_size .eq. 0 ) then
         ! we can attempt to set a value of 0 size
         ! but we need to avoid divide by 0
         num_items = 0
-      else 
+      else
         num_items = num_bytes/item_size
       endif
       bmi_status = bmi_box%ptr%set_value_float(f_str, src(:num_items))
@@ -623,23 +712,17 @@ module iso_c_bmif_2_0
       f_str = c_to_f_string(name)
       ! Use variable metadata to determine the size of the array required to
       ! hold the variable.
-      bmi_status = bmi_box%ptr%get_var_nbytes(f_str, num_bytes)
+      bmi_status = lookup_var_size(bmi_box, f_str, num_bytes, item_size)
       if( bmi_status .ne. BMI_SUCCESS ) then
         ! TODO make this write unit configurable???
-        write(0,*) "Failed to get var nbytes: ", f_str
-        return
-      end if
-      bmi_status = bmi_box%ptr%get_var_itemsize(f_str, item_size)
-      if( bmi_status .ne. BMI_SUCCESS ) then
-        ! TODO make this write unit configurable???
-        write(0,*) "Failed to get var itemsize: ", f_str
+        write(0,*) "Failed to get var nbytes/itemsize: ", f_str
         return
       end if
       if( item_size .eq. 0 ) then
         ! we can attempt to set a value of 0 size
         ! but we need to avoid divide by 0
         num_items = 0
-      else 
+      else
         num_items = num_bytes/item_size
       endif
       bmi_status = bmi_box%ptr%set_value_double(f_str, src(:num_items))
