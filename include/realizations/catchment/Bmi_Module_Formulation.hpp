@@ -7,6 +7,7 @@
 #include "Bmi_Adapter.hpp"
 #include <DataProvider.hpp>
 #include "bmi_utilities.hpp"
+#include "bmi/protocols.hpp"
 
 using data_access::MEAN;
 using data_access::SUM;
@@ -250,6 +251,25 @@ namespace realization {
         const std::vector<std::string> get_bmi_input_variables() const override;
         const std::vector<std::string> get_bmi_output_variables() const override;
 
+        virtual void check_mass_balance(const int& iteration, const int& total_steps, const std::string& timestamp) const override {
+            //Create the protocol context, each member is const, and cannot change during the check
+            models::bmi::protocols::Context ctx{iteration, total_steps, timestamp, id};
+            (void) bmi_protocols.run(models::bmi::protocols::Protocol::MASS_BALANCE, ctx);
+        }
+
+        /** @brief Per-timestep save hook — see Formulation::checkpoint_state.
+         *
+         * Uses `compound_id()` (not raw `id`) for the Context so records land
+         * in the shared checkpoint file keyed by the full engine-level
+         * identity — single-BMI formulations tag with
+         * `<catchment>:<model_type_name>`, multi submodules with the
+         * three-part compound injected during submodule construction.
+         */
+        virtual void checkpoint_state(const int& iteration, const int& total_steps, const std::string& timestamp) const override {
+            models::bmi::protocols::Context ctx{iteration, total_steps, timestamp, compound_id()};
+            (void) bmi_protocols.run(models::bmi::protocols::Protocol::SERIALIZATION, ctx);
+        }
+
     protected:
 
         /**
@@ -419,6 +439,7 @@ namespace realization {
         int next_time_step_index = 0;
 
     private:
+        models::bmi::protocols::NgenBmiProtocols bmi_protocols;
         /**
          * Whether model ``Update`` calls are allowed and handled in some way by the backing model for time steps after
          * the model's ``end_time``.

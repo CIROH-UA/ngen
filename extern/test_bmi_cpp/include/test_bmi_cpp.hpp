@@ -8,6 +8,8 @@
 #include "bmi.hxx"
 #include <numeric>
 #include <iostream>
+#include <stdexcept>
+#include <cstring>
 
 #define TRUE 1
 #define FALSE 0
@@ -24,6 +26,16 @@
 #define BMI_TYPE_NAME_INT "int"
 #define BMI_TYPE_NAME_SHORT "short"
 #define BMI_TYPE_NAME_LONG "long"
+
+#define NGEN_MASS_IN "ngen::mass_in"
+#define NGEN_MASS_OUT "ngen::mass_out"
+#define NGEN_MASS_STORED "ngen::mass_stored"
+#define NGEN_MASS_LEAKED "ngen::mass_leaked"
+
+#define NGEN_SERIALIZATION_CREATE "ngen::serialization_create"
+#define NGEN_SERIALIZATION_FREE   "ngen::serialization_free"
+#define NGEN_SERIALIZATION_SIZE   "ngen::serialization_size"
+#define NGEN_SERIALIZATION_STATE  "ngen::serialization_state"
 
 class TestBmiCpp : public bmi::Bmi {
     public:
@@ -179,19 +191,35 @@ class TestBmiCpp : public bmi::Bmi {
         std::vector<std::string> output_var_locations = { "node", "node" };
         std::vector<std::string> model_var_locations = {};
 
+        std::vector<std::string> mass_balance_var_names = { NGEN_MASS_IN, NGEN_MASS_OUT, NGEN_MASS_STORED, NGEN_MASS_LEAKED};
+        std::vector<std::string> mass_balance_var_types = { "double", "double", "double", "double"};
+        std::vector<std::string> mass_balance_var_units = { "m", "m", "m", "m" };
+        std::vector<std::string> mass_balance_var_locations = { "node", "node", "node", "node"};
+
+        // Serialization protocol variables — queryable by name but not advertised via GetInputVarNames/GetOutputVarNames.
+        // Location and grid metadata are intentionally absent: the reserved
+        // protocol variables have no spatial semantics, and the protocol
+        // never queries either. `GetVarLocation` / `GetVarGrid` are left
+        // to throw for these names — reaching for them indicates a caller
+        // bug, not a model deficiency.
+        std::vector<std::string> serialization_var_names = { NGEN_SERIALIZATION_CREATE, NGEN_SERIALIZATION_FREE, NGEN_SERIALIZATION_SIZE, NGEN_SERIALIZATION_STATE };
+        std::vector<std::string> serialization_var_types = { "int", "int", "int", "char" };
+        std::vector<std::string> serialization_var_units = { "ngen::trigger", "ngen::trigger", "bytes", "ngen::opaque" };
+
         std::vector<int> input_var_item_count = { 1, 1 };
         std::vector<int> output_var_item_count = { 1, 1 };
         std::vector<int> model_var_item_count = {};
         std::vector<int> input_var_grids = { 1, 1 };
         std::vector<int> output_var_grids = { 1, 1 };
         std::vector<int> model_var_grids = {};
-        
+
         std::map<std::string,int> type_sizes = {
             {BMI_TYPE_NAME_DOUBLE, sizeof(double)},
             {BMI_TYPE_NAME_FLOAT, sizeof(float)},
             {BMI_TYPE_NAME_INT, sizeof(int)},
             {BMI_TYPE_NAME_SHORT, sizeof(short)},
-            {BMI_TYPE_NAME_LONG, sizeof(long)}
+            {BMI_TYPE_NAME_LONG, sizeof(long)},
+            {"char", sizeof(char)}
         };
 
         // ***********************************************************
@@ -222,6 +250,83 @@ class TestBmiCpp : public bmi::Bmi {
         std::unique_ptr<double> output_var_5 = nullptr;
         std::unique_ptr<double> model_var_1 = nullptr;
         std::unique_ptr<double> model_var_2 = nullptr;
+
+        double mass_stored = 0.0;
+        double mass_leaked = 0.0;
+
+        // Serialization support. The create/free trigger variables
+        // have no backing storage — they are action signals with no
+        // stored value; the SetValue dispatch short-circuits to the
+        // respective helper without touching any field, and
+        // GetValuePtr deliberately does not handle them.
+        std::vector<char> serialized_state_;
+        int serialized_size_var = 0;
+
+        // Single source of truth for this test model's on-disk layout
+        // size. If the layout grows (new fields in create_serialization /
+        // deserialize_state below), bump both here and the read/write
+        // sequences together — deserialize_state validates the incoming
+        // size against this value, so a stale return here turns into a
+        // loud runtime error rather than a silent overread.
+        static constexpr size_t serialized_state_bytes() {
+            return sizeof(double) * 5;  // current_model_time + 2 inputs + 2 outputs
+        }
+
+        void create_serialization() {
+            serialized_state_.clear();
+            serialized_state_.reserve(serialized_state_bytes());
+
+            auto append = [&](const void* data, size_t size) {
+                const char* p = static_cast<const char*>(data);
+                serialized_state_.insert(serialized_state_.end(), p, p + size);
+            };
+
+            append(&current_model_time, sizeof(current_model_time));
+            append(input_var_1.get(),  sizeof(double));
+            append(input_var_2.get(),  sizeof(double));
+            append(output_var_1.get(), sizeof(double));
+            append(output_var_2.get(), sizeof(double));
+
+            if (serialized_state_.size() != serialized_state_bytes()) {
+                throw std::runtime_error(
+                    "create_serialization: produced " +
+                    std::to_string(serialized_state_.size()) +
+                    " bytes but the declared layout is " +
+                    std::to_string(serialized_state_bytes()) +
+                    " bytes — keep these in sync when adding fields.");
+            }
+            serialized_size_var = static_cast<int>(serialized_state_.size());
+        }
+
+        void free_serialization() {
+            serialized_state_.clear();
+            serialized_size_var = 0;
+        }
+
+        void deserialize_state(const char* data, size_t size) {
+            // Validate the caller's payload against the layout this
+            // model version knows how to read. A mismatch is treated as
+            // a hard error — callers should be restoring a record
+            // produced by the same model version.
+            if (size != serialized_state_bytes()) {
+                throw std::runtime_error(
+                    "deserialize_state: payload size " + std::to_string(size) +
+                    " does not match expected layout size " +
+                    std::to_string(serialized_state_bytes()) +
+                    " for this test model version.");
+            }
+            size_t offset = 0;
+            auto read = [&](void* dest, size_t n) {
+                std::memcpy(dest, data + offset, n);
+                offset += n;
+            };
+
+            read(&current_model_time, sizeof(current_model_time));
+            read(input_var_1.get(),  sizeof(double));
+            read(input_var_2.get(),  sizeof(double));
+            read(output_var_1.get(), sizeof(double));
+            read(output_var_2.get(), sizeof(double));
+        }
 
         /**
         * Read the BMI initialization config file and use its contents to set the state of the model.

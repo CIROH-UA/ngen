@@ -21,5 +21,7 @@ target_link_libraries(realizations_catchment PUBLIC
         NGen::geojson
         NGen::logging
         NGen::ngen_bmi
+        NGen::bmi_protocols
+        NGen::path_tokens
         )
 
