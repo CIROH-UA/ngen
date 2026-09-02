@@ -29,7 +29,7 @@ HY_Features_MPI::HY_Features_MPI( PartitionData partition_data, geojson::GeoJSON
 
       for(const auto& feat_idx : network){
         feat_id = network.get_id(feat_idx);//feature->get_id();
-        feat_type = feat_id.substr(0, 3);
+        feat_type = feat_id.substr(0, feat_id.find(hy_features::identifiers::seperator) );
 
         destinations  = network.get_destination_ids(feat_id);
         //Find upstream ids
