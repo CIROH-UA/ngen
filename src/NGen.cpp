@@ -20,6 +20,8 @@
 #include <boost/algorithm/string.hpp>
 #include <boost/range/algorithm/sort.hpp>
 
+#include <NgenSimulation.hpp>
+
 #ifdef WRITE_PID_FILE_FOR_GDB_SERVER
 #include <unistd.h>
 #endif // WRITE_PID_FILE_FOR_GDB_SERVER
@@ -32,14 +34,6 @@
 #if NGEN_WITH_ROUTING
 #include "routing/Routing_Py_Adapter.hpp"
 #endif // NGEN_WITH_ROUTING
-
-std::string catchmentDataFile = "";
-std::string nexusDataFile = "";
-std::string REALIZATION_CONFIG_PATH = "";
-bool is_subdivided_hydrofabric_wanted = false;
-
-// Define in the non-MPI case so that we don't need to conditionally compile `if (mpi_rank == 0)`
-int mpi_rank = 0;
 
 #if NGEN_WITH_MPI
 
@@ -54,26 +48,27 @@ int mpi_rank = 0;
 
 #include "core/Partition_One.hpp"
 
-std::string PARTITION_PATH = "";
-int mpi_num_procs;
 #endif // NGEN_WITH_MPI
 
 #include <Layer.hpp>
 #include <SurfaceLayer.hpp>
 #include <DomainLayer.hpp>
+#include "utilities/output/NexusOutputsMgr.hpp"
+#include "utilities/output/PerNexusCsvOutputMgr.hpp"
+#include "utilities/output/CatchmentOutputsMgr.hpp"
+#include "realizations/config/catchment_output.hpp"
+#if NGEN_WITH_NETCDF
+#include "utilities/output/PerFormulationNexusOutputMgr.hpp"
+#endif
 
-std::unordered_map<std::string, std::ofstream> nexus_outfiles;
+#include "utilities/JSON_Reader.hpp"
+
+#include <mediator/UnitsHelper.hpp>
 
 void ngen::exec_info::runtime_summary(std::ostream& stream) noexcept
 {
     stream << "Runtime configuration summary:\n";
 
-#if NGEN_WITH_MPI
-    stream << "  MPI:\n"
-           << "    Rank: " << mpi_rank << "\n"
-           << "    Processors: " << mpi_num_procs << "\n";
-#endif // NGEN_WITH_MPI
-  
 #if NGEN_WITH_PYTHON // -------------------------------------------------------
     { // START RAII
         py::scoped_interpreter guard{};
@@ -135,7 +130,17 @@ void ngen::exec_info::runtime_summary(std::ostream& stream) noexcept
 
 } // ngen::exec_info::runtime_summary
 
-int main(int argc, char *argv[]) {
+int main(int argc, char* argv[]) {
+    std::string catchmentDataFile         = "";
+    std::string nexusDataFile             = "";
+    std::string REALIZATION_CONFIG_PATH   = "";
+    bool is_subdivided_hydrofabric_wanted = false;
+    std::string PARTITION_PATH = "";
+
+    // This default value should lead to behavior matching the single-process case in the standalone or non-MPI case
+    int mpi_num_procs = 1;
+    // Define in the non-MPI case so that we don't need to conditionally compile `if (mpi_rank == 0)`
+    int mpi_rank = 0;
 
     if (argc > 1 && std::string{argv[1]} == "--info") {
         #if NGEN_WITH_MPI
@@ -149,6 +154,12 @@ int main(int argc, char *argv[]) {
             std::ostringstream output;
             output << ngen::exec_info::build_summary;
             ngen::exec_info::runtime_summary(output);
+#if NGEN_WITH_MPI
+            output << "  MPI:\n"
+                   << "    Rank: " << mpi_rank << "\n"
+                   << "    Processors: " << mpi_num_procs << "\n";
+#endif // NGEN_WITH_MPI
+
             std::cout << output.str() << std::endl;
         } // if (mpi_rank == 0)
 
@@ -304,11 +315,15 @@ int main(int argc, char *argv[]) {
 
         // Do some extra steps if we expect to load a subdivided hydrofabric
         if (is_subdivided_hydrofabric_wanted) {
-            // Ensure the hydrofabric is subdivided (either already or by doing it now), and then adjust these paths
-            if (parallel::is_hydrofabric_subdivided(mpi_rank, mpi_num_procs, true) ||
-                parallel::subdivide_hydrofabric(mpi_rank, mpi_num_procs, catchmentDataFile, nexusDataFile,
-                                                PARTITION_PATH))
-            {
+            // Ensure the hydrofabric is subdivided (either already or by doing it now), and then
+            // adjust these paths
+            if (parallel::is_hydrofabric_subdivided(catchmentDataFile, MPI_COMM_WORLD, true) ||
+                parallel::subdivide_hydrofabric(
+                    MPI_COMM_WORLD,
+                    catchmentDataFile,
+                    nexusDataFile,
+                    PARTITION_PATH
+                )) {
                 catchmentDataFile += "." + std::to_string(mpi_rank);
                 nexusDataFile += "." + std::to_string(mpi_rank);
             }
@@ -341,7 +356,7 @@ int main(int argc, char *argv[]) {
     #if NGEN_WITH_MPI
     PartitionData local_data;
     if (mpi_num_procs > 1) {
-        Partitions_Parser partition_parser(PARTITION_PATH);
+        Partitions_Parser partition_parser(ptree_from_json_file(PARTITION_PATH));
         // TODO: add something here to make sure this step worked for every rank, and maybe to checksum the file
         partition_parser.parse_partition_file();
 
@@ -373,6 +388,13 @@ int main(int argc, char *argv[]) {
 
     // TODO: Instead of iterating through a collection of FeatureBase objects mapping to catchments, we instead want to iterate through HY_Catchment objects
     geojson::GeoJSON catchment_collection;
+    // As part of the fix for NOAA-OWP/ngen#284 / NGWPC-6553,
+    // partitioning may insert sentinel flowpaths downstream of
+    // terminal nexuses. Those sentinels will not exist in the
+    // catchmentDataFile. Their listing in catchment_subset_ids works
+    // because the respective geoFOO::read() functions return the
+    // intersection of features in the file and the specified subset,
+    // rather than erroring on missing features.
     if (boost::algorithm::ends_with(catchmentDataFile, "gpkg")) {
       #if NGEN_WITH_SQLITE3
       catchment_collection = ngen::geopackage::read(catchmentDataFile, "divides", catchment_subset_ids);
@@ -392,9 +414,25 @@ int main(int argc, char *argv[]) {
     //Update the feature ids for the combined collection, using the alternative property 'id'
     //to map features to their primary id as well as the alternative property
     nexus_collection->update_ids("id");
+
+    boost::property_tree::ptree realization_config = ptree_from_json_file(REALIZATION_CONFIG_PATH);
+
+    std::shared_ptr<Simulation_Time> sim_time;
+
+    auto possible_simulation_time = realization_config.get_child_optional("time");
+    if (!possible_simulation_time) {
+        throw std::runtime_error("ERROR: No simulation time period defined.");
+    }
+
+    auto simulation_time_config = realization::config::Time(*possible_simulation_time).make_params();
+
+    sim_time = std::make_shared<Simulation_Time>(simulation_time_config);
+
     std::cout<<"Initializing formulations" << std::endl;
-    std::shared_ptr<realization::Formulation_Manager> manager = std::make_shared<realization::Formulation_Manager>(REALIZATION_CONFIG_PATH);
-    manager->read(catchment_collection, utils::getStdOut());
+
+    std::shared_ptr<realization::Formulation_Manager> manager =
+        std::make_shared<realization::Formulation_Manager>(realization_config);
+    manager->read(simulation_time_config, catchment_collection, utils::getStdOut());
 
     //TODO refactor manager->read so certain configs can be queried before the entire
     //realization collection is created
@@ -404,8 +442,6 @@ int main(int argc, char *argv[]) {
     { // Run t-route from single process
     if(manager->get_using_routing()) {
       std::cout<<"Using Routing"<<std::endl;
-      std::string t_route_config_file_with_path = manager->get_t_route_config_file_with_path();
-      router = std::make_unique<routing_py_adapter::Routing_Py_Adapter>(t_route_config_file_with_path);
     }
     else {
       std::cout<<"Not Using Routing"<<std::endl;
@@ -430,25 +466,131 @@ int main(int argc, char *argv[]) {
 
     //validate dendritic connections
     features.validate_dendritic();
-    //TODO don't really need catchment_collection once catchments are added to nexus collection
-    //Still using  catchments for geometry at the moment, fix this later
-    //catchment_collection.reset();
+
+    // Build the catchment output manager now that the features (and their formulations) exist: gather
+    // every catchment's output columns, then construct the manager with the full set up front. 
+    // Under MPI each rank's files go in a rank_<N>/ subdirectory when the domain requests it,
+    // or always for per_formulation (so ranks never share a file) -- resolved once into the root here.
+    std::shared_ptr<utils::CatchmentOutputsMgr> catchment_outputs_mgr;
+    std::shared_ptr<utils::CatchmentOutputsMgr> domain_outputs_mgr;
+    const auto& catchment_output = manager->get_output_config().catchment;
+    if (catchment_output.enable) {
+        std::vector<utils::FeatureDescriptor> descriptors;
+        for (const auto& id : features.catchments()) {
+            descriptors.emplace_back(id, manager->get_formulation(id)->get_output_fields());
+        }
+        realization::config::Output cat_config = manager->get_output_config();
+        cat_config.root = realization::config::rank_output_root(
+            cat_config.root, cat_config.catchment, mpi_rank, mpi_num_procs);
+        catchment_outputs_mgr = realization::config::make_catchment_output_mgr(
+            cat_config, std::move(descriptors));
+    }
+
+    //A domain formulation is domain-wide and runs
+    // identically on every rank, so writing it once here avoids N redundant per-rank copies; the root
+    // is not rank-scoped (single writer). Each domain layer is its own feature
+    // ("layer_<id>", layer name), landing under "<root>/layer_<id>/".
+    if (catchment_output.enable && mpi_rank == 0) {
+        std::vector<utils::FeatureDescriptor> descriptors;
+        auto& layer_meta = manager->get_layer_metadata();
+        for (int layer_key : layer_meta.get_keys()) {
+            if (manager->has_domain_formulation(layer_key)) {
+                const auto& layer_desc = layer_meta.get_layer(layer_key);
+                descriptors.emplace_back("layer_" + std::to_string(layer_desc.id), layer_desc.name,
+                                         manager->get_domain_formulation(layer_key)->get_output_fields());
+            }
+        }
+        if (!descriptors.empty()) {
+            domain_outputs_mgr = realization::config::make_catchment_output_mgr(
+                manager->get_output_config(), std::move(descriptors));
+        }
+    }
+    // TODO don't really need catchment_collection once catchments are added to nexus collection
+    // Still using  catchments for geometry at the moment, fix this later
+    // catchment_collection.reset();
+
+    // T-ROUTE data storage
+    std::unordered_map<std::string, int> nexus_indexes;
+#if NGEN_WITH_ROUTING
+    int nexus_index = 0;
+    for (int i = 0; i < nexus_collection->get_size(); ++i) {
+        auto feature = nexus_collection->get_feature(i);
+        std::string feature_id = feature->get_id();
+        if (hy_features::identifiers::isNexus(feature_id.substr(0, 3))) {
+            nexus_indexes[feature_id] = nexus_index;
+            ++nexus_index;
+        }
+    }
+#endif // NGEN_WITH_ROUTING
+
     nexus_collection.reset();
 
-    //Still hacking nexus output for the moment
-    for(const auto& id : features.nexuses()) {
+    std::shared_ptr<utils::NexusOutputsMgr> nexus_outputs_mgr;
+    const auto& nexus_output = manager->get_output_config().nexus;
+    // Routing consumes nexus output, so a routing run with nexus output disabled cannot work.
+    if (manager->get_using_routing() && !nexus_output.enable) {
+        throw std::runtime_error(
+            "Routing is enabled but nexus output is disabled (output.nexus.enable = false); "
+            "the routing run has no nexus output to consume.");
+    }
+    #if NGEN_WITH_MPI
+    std::vector<std::string> nexus_ids;
+    std::copy_if(features.nexuses().begin(), features.nexuses().end(), std::back_inserter(nexus_ids),
+                 [&features](std::string nid) { return !features.is_remote_sender_nexus((nid)); });
+    // TODO: (later) I'd love to be able to use local_data.nexus_ids and local_data.remote_connections for this, but
+    // TODO:        they aren't well documented and I've already misused them once.  However, this could probably be
+    // TODO:        optimized in the future based on those.
+
+    #else
+    std::vector<std::string> nexus_ids(features.nexuses().begin(), features.nexuses().end());
+    #endif
+
+    if (nexus_output.enable && nexus_output.format == realization::config::OutputFormat::netcdf) {
+        // TODO: (later) use nullptr for now, until full support for multiple formulations per catchment is available
+        std::shared_ptr<std::vector<std::string>> formulation_ids = nullptr;
+
+        size_t timesteps = sim_time->get_total_output_times();
         #if NGEN_WITH_MPI
-        if (mpi_num_procs > 1) {
-            if (!features.is_remote_sender_nexus(id)) {
-                nexus_outfiles[id].open(manager->get_output_root() + id + "_output.csv", std::ios::trunc);
-            }
-        } else {
-          nexus_outfiles[id].open(manager->get_output_root() + id + "_output.csv", std::ios::trunc);
-        }
+        int local_nexus_write_offset, total_nexus_count;
+        int local_nexus_count = nexus_ids.size();
+
+        // Get offset as sum of nexus counts for all ranks before this one
+        MPI_Exscan(&local_nexus_count, &local_nexus_write_offset, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+        // Above not defined for 0, so manually set
+        if (mpi_rank == 0)
+            local_nexus_write_offset = 0;
+
+        // Calc total count in the last rank based on its (max) offset, then broadcast to the others
+        if (mpi_rank == mpi_num_procs - 1)
+            total_nexus_count = local_nexus_write_offset + local_nexus_count;
+        MPI_Bcast(&total_nexus_count, 1, MPI_INT, mpi_num_procs - 1, MPI_COMM_WORLD);
+
+        #if NGEN_WITH_NETCDF
+        nexus_outputs_mgr = std::make_shared<utils::PerFormulationNexusOutputMgr>(nexus_ids, formulation_ids, manager->get_output_config().root, timesteps, mpi_rank, local_nexus_write_offset, mpi_num_procs, total_nexus_count);
         #else
-        nexus_outfiles[id].open(manager->get_output_root() + id + "_output.csv", std::ios::trunc);
+        throw std::runtime_error("NetCDF support required to use per-formulation nexus files.");
+        #endif
+
+        // One more barrier here to make sure other ranks wait while rank 0 creates the per-formulation nexus file
+        MPI_Barrier(MPI_COMM_WORLD);
+        #else
+        #if NGEN_WITH_NETCDF
+        nexus_outputs_mgr = std::make_shared<utils::PerFormulationNexusOutputMgr>(nexus_ids, formulation_ids, manager->get_output_config().root, timesteps);
+        #else
+        throw std::runtime_error("NetCDF support required to use per-formulation nexus files.");
+        #endif
+
         #endif
     }
+    else if (nexus_output.enable && nexus_output.format == realization::config::OutputFormat::csv) {
+        // CSV nexus output: one file per nexus. Under MPI, when the domain sets rank_subdir, each
+        // rank's files go in a rank_<N>/ subdirectory to cut filesystem contention from many ranks
+        // sharing a directory. Resolved once into the root here (same helper as catchment output).
+        const std::string nexus_root = realization::config::rank_output_root(
+            manager->get_output_config().root, nexus_output, mpi_rank, mpi_num_procs);
+        nexus_outputs_mgr = std::make_shared<utils::PerNexusCsvOutputMgr>(nexus_ids, nexus_root);
+    }
+    // else: nexus output disabled -- nexus_outputs_mgr stays null.
 
     std::cout<<"Running Models"<<std::endl;
 
@@ -472,90 +614,84 @@ int main(int argc, char *argv[]) {
     // first make sure that the layer are listed in decreasing order
     boost::range::sort(keys, std::greater<int>());
 
-    std::vector<std::shared_ptr<ngen::Layer> > layers;
+    std::vector<std::shared_ptr<ngen::Layer>> layers;
     layers.resize(keys.size());
 
-    for(long i = 0; i < keys.size(); ++i)
-    {
-      auto& desc = layer_meta_data.get_layer(keys[i]);
-      std::vector<std::string> cat_ids;
+    for (long i = 0; i < keys.size(); ++i) {
+        auto& desc = layer_meta_data.get_layer(keys[i]);
+        std::vector<std::string> cat_ids;
 
-      // make a new simulation time object with a different output interval
-      Simulation_Time sim_time(*manager->Simulation_Time_Object, time_steps[i]);
-      if( manager->has_domain_formulation(keys[i])){
-        //create a domain wide layer
-        auto formulation = manager->get_domain_formulation(keys[i]);
-        layers[i] = std::make_shared<ngen::DomainLayer>(desc, sim_time, features, 0, formulation);
-      }
-      else{
-        for ( std::string id : features.catchments(keys[i]) ) { cat_ids.push_back(id); }
-        if (keys[i] != 0 )
-        {
-          layers[i] = std::make_shared<ngen::Layer>(desc, cat_ids, sim_time, features, catchment_collection, 0);
+        // make a new simulation time object with a different output interval
+        Simulation_Time layer_sim_time(*sim_time, time_steps[i]);
+        if (manager->has_domain_formulation(keys[i])) {
+            // create a domain wide layer
+            auto formulation = manager->get_domain_formulation(keys[i]);
+            layers[i] =
+                std::make_shared<ngen::DomainLayer>(desc, layer_sim_time, features, 0, formulation,
+                                                    domain_outputs_mgr);
+        } else {
+            for (std::string id : features.catchments(keys[i])) {
+                cat_ids.push_back(id);
+            }
+            if (keys[i] != 0) {
+                layers[i] = std::make_shared<ngen::Layer>(
+                    desc,
+                    cat_ids,
+                    layer_sim_time,
+                    features,
+                    catchment_collection,
+                    0,
+                    catchment_outputs_mgr
+                );
+            } else {
+                layers[i] = std::make_shared<ngen::SurfaceLayer>(
+                    desc,
+                    cat_ids,
+                    layer_sim_time,
+                    features,
+                    catchment_collection,
+                    0,
+                    nexus_outputs_mgr,
+                    catchment_outputs_mgr
+                );
+            }
         }
-        else
-        {
-          layers[i] = std::make_shared<ngen::SurfaceLayer>(desc, cat_ids, sim_time, features, catchment_collection, 0, nexus_subset_ids, nexus_outfiles);
-        }
-      }
-
     }
 
-    auto time_done_init = std::chrono::steady_clock::now();
+    // T-ROUTE data storage
+    std::unordered_map<std::string, int> catchment_indexes;
+#if NGEN_WITH_ROUTING && NGEN_WITH_ROUTING_TROUTE_BMI
+    size_t catchment_collection_size = catchment_collection->get_size();
+    for (int i = 0; i < catchment_collection_size; ++i) {
+        auto feature = catchment_collection->get_feature(i);
+        std::string feature_id = feature->get_id();
+        catchment_indexes[feature_id] = i;
+    }
+#endif // NGEN_WITH_ROUTING && NGEN_WITH_ROUTING_TROUTE_BMI
+
+    auto simulation = std::make_unique<NgenSimulation>(*sim_time,
+                                                       layers,
+                                                       std::move(catchment_indexes),
+                                                       std::move(nexus_indexes),
+                                                       mpi_rank,
+                                                       mpi_num_procs);
+
+    auto time_done_init                             = std::chrono::steady_clock::now();
     std::chrono::duration<double> time_elapsed_init = time_done_init - time_start;
 
-    //Now loop some time, iterate catchments, do stuff for total number of output times
-    auto num_times = manager->Simulation_Time_Object->get_total_output_times();
-    for( int count = 0; count < num_times; count++) 
-    {
-      // The Inner loop will advance all layers unless doing so will break one of two constraints
-      // 1) A layer may not proceed ahead of the master simulation object's current time
-      // 2) A layer may not proceed ahead of any layer that is computed before it
-      // The do while loop ensures that all layers are tested at least once while allowing 
-      // layers with small time steps to be updated more than once
-      // If a layer with a large time step is after a layer with a small time step the
-      // layer with the large time step will wait for multiple timesteps from the preceeding
-      // layer.
-      
-      // this is the time that layers are trying to reach (or get as close as possible)
-      auto next_time = manager->Simulation_Time_Object->next_timestep_epoch_time();
+    simulation->run_catchments();
 
-      // this is the time that the layer above the current layer is at
-      auto prev_layer_time = next_time;
-
-      // this is the time that the least advanced layer is at
-      auto layer_min_next_time = next_time;
-      do
-      {
-        for ( auto& layer : layers ) 
-        {
-          auto layer_next_time = layer->next_timestep_epoch_time();
-
-          // only advance if you would not pass the master next time and the previous layer next time
-          if ( layer_next_time <= next_time && layer_next_time <=  prev_layer_time)
-          {
-            if(count%100==0) std::cout<<"Updating layer: "<<layer->get_name()<<"\n";
-            layer->update_models(); //assume update_models() calls time->advance_timestep()
-            prev_layer_time = layer_next_time;
-          }
-          else
-          {
-            layer_min_next_time = prev_layer_time = layer->current_timestep_epoch_time(); 
-          }
-
-          if ( layer_min_next_time > layer_next_time)
-          {
-            layer_min_next_time = layer_next_time;
-          }
-        } //done layers
-      } while( layer_min_next_time < next_time );  // rerun the loop until the last layer would pass the master next time
-
-      if (count + 1 < num_times)
-      {
-        manager->Simulation_Time_Object->advance_timestep();
-      }
-
-    } //done time
+    // Close output file(s). close() flushes and commits everything received, so no separate
+    // end-of-run commit_writes() is needed (writes buffer normally during the run).
+    if (nexus_outputs_mgr) {
+        nexus_outputs_mgr->close();
+    }
+    if (catchment_outputs_mgr) {
+        catchment_outputs_mgr->close();
+    }
+    if (domain_outputs_mgr) {
+        domain_outputs_mgr->close();
+    }
 
 #if NGEN_WITH_MPI
     // Ibarrier used to reduce the poll rate and cpu usage boosting performance on variable clock speed systems
@@ -572,28 +708,22 @@ int main(int argc, char *argv[]) {
             usleep(sleep_microseconds);
         }
     }
+    if (mpi_rank == 0) {
+        std::cout << "Finished " << sim_time->get_total_output_times() << " timesteps." << std::endl;
+    }
 #endif
     if (mpi_rank == 0) {    
-        std::cout << "Finished " << manager->Simulation_Time_Object->get_total_output_times() << " timesteps." << std::endl;
-
         auto time_done_simulation = std::chrono::steady_clock::now();
         std::chrono::duration<double> time_elapsed_simulation = time_done_simulation - time_done_init;
 
-
-
-#if NGEN_WITH_ROUTING
-        if(manager->get_using_routing()) {
-          //Note: Currently, delta_time is set in the t-route yaml configuration file, and the
-          //number_of_timesteps is determined from the total number of nexus outputs in t-route.
-          //It is recommended to still pass these values to the routing_py_adapter object in
-          //case a future implmentation needs these two values from the ngen framework.
-          int number_of_timesteps = manager->Simulation_Time_Object->get_total_output_times();
-
-          int delta_time = manager->Simulation_Time_Object->get_output_interval_seconds();
-          
-          router->route(number_of_timesteps, delta_time); 
-        }
-#endif
+    if (manager->get_using_routing()) {
+        std::string t_route_config_file_with_path = manager->get_t_route_config_file_with_path();
+#if NGEN_WITH_ROUTING_TROUTE_BMI
+        simulation->run_routing_bmi(features, t_route_config_file_with_path);
+#else
+        simulation->run_routing(t_route_config_file_with_path);
+#endif // NGEN_WITH_ROUTING_TROUTE_BMI
+    }
 
     auto time_done_routing = std::chrono::steady_clock::now();
     std::chrono::duration<double> time_elapsed_routing = time_done_routing - time_done_simulation;

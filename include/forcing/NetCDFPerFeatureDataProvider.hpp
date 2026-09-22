@@ -13,14 +13,16 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <set>
 #include <sstream>
 #include <exception>
 #include <mutex>
 #include "assert.h"
 #include <iomanip>
+#include <optional>
+#include <ctime>
 #include <boost/compute/detail/lru_cache.hpp>
 
-#include <UnitsHelper.hpp>
 #include <StreamHandler.hpp>
 
 #include "AorcForcing.hpp"
@@ -48,19 +50,56 @@ namespace data_access
         };
 
         /**
+         * @brief Time metadata for netcdf time units.
+         */
+        struct TimeInfo
+        {
+            TimeUnit unit;                  //the unit raw time values are stored in
+            double scale_factor;            //multiplier converting a raw value to seconds
+            std::optional<std::time_t> epoch_start_time;   //reference epoch, in seconds since the Unix epoch, if specified
+        };
+
+        /**
+         * @brief Interpret a NetCDF time `units` string as a time unit and scale factor.
+         *
+         * Handles both bare units and the CF form "<unit> since <date>", in which case
+         * the parsed reference epoch is returned in the result.
+         *
+         * @param units_str the raw `units` attribute value (e.g. "ns", "hours")
+         * @return the parsed @ref TimeInfo, or std::nullopt if @p units_str is unrecognized
+         */
+        static std::optional<TimeInfo> interpret_time_units(const std::string& units_str);
+
+        /**
+         * @brief Parse a reference-epoch timestamp into seconds since the Unix epoch.
+         *
+         * @param epoch_str the timestamp text (e.g. "01/01/1970 00:00:00")
+         * @param format a std::get_time / strptime style format string
+         * @return seconds since the Unix epoch
+         */
+        static std::time_t parse_epoch(const std::string& epoch_str, const std::string& format);
+
+        /**
          * @brief Factory method that creates or returns an existing provider for the provided path.
          * @param input_path The path to a NetCDF file with lumped catchment forcing values.
          * @param log_s An output log stream for messages from the underlying library. If a provider object for
          * the given path already exists, this argument will be ignored.
          */
-        static std::shared_ptr<NetCDFPerFeatureDataProvider> get_shared_provider(std::string input_path, time_t sim_start, time_t sim_end, utils::StreamHandler log_s, bool enable_cache);
+        static std::shared_ptr<NetCDFPerFeatureDataProvider> get_shared_provider(std::string input_path, time_t sim_start, time_t sim_end, utils::StreamHandler log_s, bool enable_cache = true);
+
+        /**
+         * @brief Tell provider an id it is expected to provide.
+         */
+        void hint_shared_provider_id(const std::string& id);
 
         /**
          * @brief Cleanup the shared providers cache, ensuring that the files get closed.
          */
         static void cleanup_shared_providers();
 
-        NetCDFPerFeatureDataProvider(std::string input_path, time_t sim_start, time_t sim_end,  utils::StreamHandler log_s, bool enable_cache);
+        NetCDFPerFeatureDataProvider(std::string input_path, time_t sim_start, time_t sim_end, utils::StreamHandler log_s, bool enable_cache = true);
+
+        NetCDFPerFeatureDataProvider() = delete;        
 
         // Default implementation defined in the .cpp file so that
         // client code doesn't need to have the full definition of
@@ -122,27 +161,69 @@ namespace data_access
         std::vector<std::string> variable_names;
         std::vector<std::string> loc_ids;
         std::vector<double> time_vals;
-        std::map<std::string, std::size_t> id_pos;
+        std::set<std::string> hinted_ids;
+        std::map<std::string, std::size_t> id_pos;      // map from cat-id to position in vec of nc var values; accounts for chunking
+        std::vector<std::pair<size_t, size_t>> chunks;  // a chunk is the start and length of a span in the "catchment-id" dim of a nc variable
         double start_time;                              // the begining of the first time for which data is stored
         double stop_time;                               // the end of the last time for which data is stored
         TimeUnit time_unit;                             // the unit that time was stored as in the file
         double time_stride;                             // the amount of time between stored time values
         utils::StreamHandler log_stream;
-
+        std::string file_path;
 
         std::shared_ptr<netCDF::NcFile> nc_file;
 
         std::map<std::string,netCDF::NcVar> ncvar_cache;
         std::map<std::string,std::string> units_cache;
         boost::compute::detail::lru_cache<std::string, std::shared_ptr<std::vector<double>>> value_cache;
+
         bool enable_cache;
-        size_t cache_slice_t_size = 1;
+
+        // number of time slices per cache entry
+        // this is a tunable parameter; your mileage may vary
+        // NOTE: it would be nice if this were divisible by 2 and 4
+        size_t cache_slice_t_size = 24;
+        
         size_t cache_slice_c_size = 1;
 
         const netCDF::NcVar& get_ncvar(const std::string& name);
 
         const std::string& get_ncvar_units(const std::string& name);
 
+        void test_data_is_readable();
+
+        /**
+         * @brief Read the time unit, scale factor and reference epoch from a `Time` variable.
+         *
+         * Reads the `units` and `epoch_start` attributes and resolves them via
+         * @ref interpret_time_units and @ref parse_epoch, warning and falling back to
+         * sensible defaults (seconds, Unix epoch) when an attribute is absent or
+         * unrecognized.
+         *
+         * @param time_var the file's `Time` variable
+         * @return the resolved time metadata
+         */
+        TimeInfo get_time_metadata(const netCDF::NcVar& time_var);
+
+        /**
+         * @brief Attempts to align the internal cache size with the chunking parameters of
+         * the underlying netCDF variables.
+         * If no chunking is present, the default cache size is used.
+         *
+         * This can have some significant performance implications.
+         * both in terms of memory use and speed of access.
+         * If the variables are chunked too large, then the cache will hold
+         * a lot of data in memory.  If they are too small, then we end up
+         * doing a lot of small reads from the netCDF file.
+         */
+        void align_cache_with_chunks();
+
+        /**
+         * @brief If applicable, update chunk spans.
+         * Note, no hint_shared_provider_id() calls should be made afterwards.
+         * Note, additional calls have no effect.
+         */
+        void maybe_update_chunks_with_hints();
     };
 }
 

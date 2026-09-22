@@ -1,12 +1,13 @@
 #include <HY_Features_MPI.hpp>
 #include <HY_PointHydroNexusRemote.hpp>
+#include <Formulation_Manager.hpp>
 
 #if NGEN_WITH_MPI
 
 using namespace hy_features;
 
 HY_Features_MPI::HY_Features_MPI( PartitionData partition_data, geojson::GeoJSON linked_hydro_fabric, std::shared_ptr<Formulation_Manager> formulations, int mpi_rank, int mpi_num_procs) :
-      network(linked_hydro_fabric), formulations(formulations), mpi_rank(mpi_rank), mpi_num_procs(mpi_num_procs)
+      network(linked_hydro_fabric), mpi_rank(mpi_rank), mpi_num_procs(mpi_num_procs)
 { 
       std::string feat_id;
       std::string feat_type;
@@ -38,18 +39,6 @@ HY_Features_MPI::HY_Features_MPI( PartitionData partition_data, geojson::GeoJSON
         {
           //Find and prepare formulation
           auto formulation = formulations->get_formulation(feat_id);
-          if (formulations->is_catchment_writing_enabled() == true)
-          {
-            formulation->set_output_stream(formulations->get_output_root() + feat_id + ".csv");
-          }
-          else
-          {
-            formulation->set_output_stream("/dev/null");
-          };
-          // TODO: add command line or config option to have this be omitted
-          //FIXME why isn't default param working here??? get_output_header_line() fails.
-          formulation->write_output("Time Step,""Time,"+formulation->get_output_header_line(",")+"\n");
-          
           // get the catchment layer from the hydro fabric
           const auto& cat_json_node = linked_hydro_fabric->get_feature(feat_id);
           long lyr = cat_json_node->has_key("layer") ? cat_json_node->get_property("layer").as_natural_number() : 0;

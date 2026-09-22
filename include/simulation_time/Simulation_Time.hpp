@@ -78,7 +78,7 @@ class Simulation_Time
      * @brief Accessor to the total number of time steps
      * @return total_output_times
      */
-    int get_total_output_times()
+    int get_total_output_times() const
     {
         return total_output_times;
     }
@@ -87,7 +87,7 @@ class Simulation_Time
      * @brief Accessor to the output_interval_seconds
      * @return output_interval_seconds
      */
-    int get_output_interval_seconds()
+    int get_output_interval_seconds() const
     {
         return output_interval_seconds;
     }
@@ -97,7 +97,7 @@ class Simulation_Time
      * @return current_date_time_epoch
     */
 
-    time_t get_current_epoch_time()
+    time_t get_current_epoch_time() const
     {
         return current_date_time_epoch;
     }   
@@ -106,45 +106,48 @@ class Simulation_Time
      * @brief Accessor to the current timestamp string
      * @return current_timestamp
      */ 
-    std::string get_timestamp(int current_output_time_index)
+    std::string get_timestamp(int current_output_time_index) const
     {
-        // "get" method mutates state!
-        current_date_time_epoch = start_date_time_epoch + current_output_time_index * output_interval_seconds;
+        if (start_date_time_epoch + current_output_time_index * output_interval_seconds != current_date_time_epoch) {
+            throw std::runtime_error("Simulation_Time misuse");
+        }
             
-        struct tm *temp_gmtime_struct;
+        struct tm temp_gmtime_struct;
 
-        temp_gmtime_struct = gmtime(&current_date_time_epoch);
+        gmtime_r(&current_date_time_epoch, &temp_gmtime_struct);
 
         char current_timestamp[20];
         const char* time_format = "%Y-%m-%d %T";
 
-        if (strftime(current_timestamp, sizeof(current_timestamp), time_format, temp_gmtime_struct) == 0) { 
-            fprintf(stderr, "ERROR: strftime returned 0");
-            exit(EXIT_FAILURE); 
+        if (strftime(current_timestamp, sizeof(current_timestamp), time_format, &temp_gmtime_struct) == 0) {
+            throw std::runtime_error("ERROR: strftime returned 0");
         }
 
         return current_timestamp;
     }
 
-    inline int next_timestep_index(int epoch_time_seconds)
+    inline int next_timestep_index(int epoch_time_seconds) const
     {
         return int(epoch_time_seconds - start_date_time_epoch) / output_interval_seconds;
     }
 
-    inline int next_timestep_index()
+    inline int next_timestep_index() const
     {
         return next_timestep_index(current_date_time_epoch);
     }
 
-    inline time_t next_timestep_epoch_time(int epoch_time_seconds){
+    inline time_t next_timestep_epoch_time(int epoch_time_seconds) const
+    {
         return start_date_time_epoch + ( next_timestep_index(epoch_time_seconds) * output_interval_seconds );
     }
 
-    inline time_t next_timestep_epoch_time(){
+    inline time_t next_timestep_epoch_time() const
+    {
         return next_timestep_epoch_time(current_date_time_epoch);
     }
 
-    inline int diff(const Simulation_Time& other){
+    inline int diff(const Simulation_Time& other) const
+    {
         return start_date_time_epoch - other.start_date_time_epoch;
     }
 

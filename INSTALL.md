@@ -35,15 +35,15 @@ cd ngen
 **Download the Boost Libraries:**
 
 ```shell
-curl -L -o boost_1_79_0.tar.bz2 https://sourceforge.net/projects/boost/files/boost/1.79.0/boost_1_79_0.tar.bz2/download \
-    && tar -xjf boost_1_79_0.tar.bz2 \
-    && rm boost_1_79_0.tar.bz2
+curl -L -o boost_1_86_0.tar.bz2 https://sourceforge.net/projects/boost/files/boost/1.86.0/boost_1_86_0.tar.bz2/download \
+    && tar -xjf boost_1_86_0.tar.bz2 \
+    && rm boost_1_86_0.tar.bz2
 ```
 
 **Set the ENV for Boost and C compiler:**
 
 ```shell
-set BOOST_ROOT="/boost_1_79_0"
+set BOOST_ROOT="/boost_1_86_0"
 set CXX=/usr/bin/g++
 ```
 
@@ -61,6 +61,7 @@ In addition to normal CMake options, the following `ngen` configuration options 
 Option                | Description
 --------------------- | -----------
 NGEN_WITH_NETCDF      | Include NetCDF support
+NGEN_WITH_PARALLEL_NETCDF | Use HDF5-parallel I/O for per-formulation nexus output (requires `NGEN_WITH_NETCDF` and a NetCDF library built with parallel I/O); without this, MPI builds gather per-timestep nexus data to rank 0 for serial writing
 NGEN_WITH_SQLITE3     | Include SQLite3 support (GeoPackage support)
 NGEN_WITH_UDUNITS     | Include UDUNITS support
 NGEN_WITH_MPI         | Include MPI (Parallel Execuation) support
@@ -79,7 +80,7 @@ The following CMake command will configure the build:
 
 ```shell
 cmake -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
-      -DBOOST_ROOT=boost_1_79_0 \
+      -DBOOST_ROOT=boost_1_86_0 \
       -B /build \
       -S .
 ```

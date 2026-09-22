@@ -4,10 +4,19 @@ FROM rockylinux:${ROCKYLINUX_TAG}
 RUN dnf update -y \
     && dnf install -y dnf-plugins-core epel-release \
     && dnf repolist \
-    && dnf install -y --allowerasing tar git gcc-c++ gcc make cmake udunits2-devel coreutils \
+    && dnf install -y --allowerasing tar git gcc-toolset-12 make cmake udunits2-devel coreutils \
     && dnf clean all
 
-ARG BOOST_VERSION="1.79.0"
+# Rocky 8's system compiler is GCC 8, which doesn't support C++20 and
+# whose libstdc++ lacks complete C++17 <filesystem> support.
+# Build with the gcc-toolset-12 SCL toolchain instead, and point the
+# runtime loader at its libstdc++.
+ENV PATH="/opt/rh/gcc-toolset-12/root/usr/bin:${PATH}" \
+    LD_LIBRARY_PATH="/opt/rh/gcc-toolset-12/root/usr/lib64:/opt/rh/gcc-toolset-12/root/usr/lib" \
+    CC="/opt/rh/gcc-toolset-12/root/usr/bin/gcc" \
+    CXX="/opt/rh/gcc-toolset-12/root/usr/bin/g++"
+
+ARG BOOST_VERSION="1.86.0"
 RUN export BOOST_ARCHIVE="boost_$(echo ${BOOST_VERSION} | tr '\.' '_').tar.gz" \
     && export BOOST_URL="https://sourceforge.net/projects/boost/files/boost/${BOOST_VERSION}/${BOOST_ARCHIVE}/download" \
     && cd / \
@@ -29,7 +38,7 @@ RUN cmake -S . \
           -DNGEN_WITH_SQLITE:BOOL=OFF \
           -DNGEN_WITH_UDUNITS:BOOL=ON \
           -DNGEN_WITH_BMI_FORTRAN:BOOL=OFF \
-          -DNGEN_WITH_BMI_C:BOOL=OFF \
+          -DNGEN_WITH_BMI_C:BOOL=ON \
           -DNGEN_WITH_PYTHON:BOOL=OFF \
           -DNGEN_WITH_TESTS:BOOL=ON \
           -DNGEN_QUIET:BOOL=ON \
