@@ -104,6 +104,7 @@ void NgenSimulation::advance_models_one_output_step()
                                      nexus_indexes_,
                                      simulation_step_
                                      ); // assume update_models() calls time->advance_timestep()
+                std::cerr << "[DEBUG-LAYER] rank=" << mpi_rank_ << " returned from update_models step=" << simulation_step_ << std::endl;
                 prev_layer_time = layer_next_time;
             } else {
                 layer_min_next_time = prev_layer_time = layer->current_timestep_epoch_time();
