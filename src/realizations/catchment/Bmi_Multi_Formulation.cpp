@@ -408,9 +408,20 @@ void Bmi_Multi_Formulation::update(time_step_t t_index, time_step_t t_delta) {
     }
 
     while (next_time_step_index <= t_index) {
+        int module_index = 0;
+
         for (nested_module_ptr &module : modules) {
-            // By setting up in create function, these will now have their own providers
+            std::cerr << "[DEBUG] BEFORE module=" << module_index
+                    << " catchment=" << get_catchment_id()
+                    << " timestep=" << t_index << std::endl;
+
             module->update(t_index, t_delta);
+
+            std::cerr << "[DEBUG] AFTER module=" << module_index
+                    << " catchment=" << get_catchment_id()
+                    << " timestep=" << t_index << std::endl;
+
+            module_index++;
         }
         next_time_step_index++;
     }
