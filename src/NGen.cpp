@@ -680,6 +680,7 @@ int main(int argc, char* argv[]) {
     std::chrono::duration<double> time_elapsed_init = time_done_init - time_start;
 
     simulation->run_catchments();
+    std::cerr << "[DEBUG-RANK] rank=" << mpi_rank << " returned from run_catchments()" << std::endl;
 
     // Close output file(s). close() flushes and commits everything received, so no separate
     // end-of-run commit_writes() is needed (writes buffer normally during the run).
