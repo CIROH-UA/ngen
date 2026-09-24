@@ -27,6 +27,10 @@ set(NGEN_EXT_DIR  "${NGEN_ROOT_DIR}/extern")
 set(NGEN_MOD_DIR  "${NGEN_ROOT_DIR}/cmake")
 list(APPEND CMAKE_MODULE_PATH "${NGEN_MOD_DIR}")
 
+# Always emit compile_commands.json so editor tooling (clangd, etc.) can index
+# the tree regardless of which build configuration is used.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # Provides:
 #   (1) finds Git package
 #   (2) Sets ${NGEN_HAS_GIT_DIR} to ON/OFF if ${NGEN_ROOT_DIR}/.git exists
@@ -115,7 +119,7 @@ endif()
 
 # -----------------------------------------------------------------------------
 # Set global C++ options
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 
@@ -376,6 +380,9 @@ add_subdirectory("src/forcing")
 add_subdirectory("src/utilities/mdarray")
 add_subdirectory("src/utilities/mdframe")
 add_subdirectory("src/utilities/logging")
+add_subdirectory("src/utilities/path_tokens")
+add_subdirectory("src/utilities/serialization")
+add_subdirectory("src/utilities/bmi")
 
 target_link_libraries(ngen
     PUBLIC
@@ -388,6 +395,7 @@ target_link_libraries(ngen
         NGen::forcing
         NGen::core_mediator
         NGen::logging
+        NGen::bmi_protocols
 )
 
 if(NGEN_WITH_SQLITE)

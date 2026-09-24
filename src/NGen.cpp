@@ -506,17 +506,38 @@ int main(int argc, char *argv[]) {
 
     //Now loop some time, iterate catchments, do stuff for total number of output times
     auto num_times = manager->Simulation_Time_Object->get_total_output_times();
-    for( int count = 0; count < num_times; count++) 
+
+    // T-ROUTE data storage
+    std::vector<double> catchment_outflows;
+    std::unordered_map<std::string, int> catchment_indexes;
+    std::vector<double> nexus_downstream_flows;
+    std::unordered_map<std::string, int> nexus_indexes;
+#if NGEN_WITH_ROUTING
+    catchment_outflows.resize(catchment_collection->get_size() * num_times);
+    for (int i = 0; i < catchment_collection->get_size(); ++i) {
+        auto feature = catchment_collection->get_feature(i);
+        std::string feature_id = feature->get_id();
+        catchment_indexes[feature_id] = i;
+    }
+    nexus_downstream_flows.resize(nexus_collection->get_size() * num_times);
+    for (int i = 0; i < nexus_collection->get_size(); ++i) {
+        auto feature = catchment_collection->get_feature(i);
+        std::string feature_id = feature->get_id();
+        nexus_indexes[feature_id] = i;
+    }
+#endif // NGEN_WITH_ROUTING
+
+    for( int count = 0; count < num_times; count++)
     {
       // The Inner loop will advance all layers unless doing so will break one of two constraints
       // 1) A layer may not proceed ahead of the master simulation object's current time
       // 2) A layer may not proceed ahead of any layer that is computed before it
-      // The do while loop ensures that all layers are tested at least once while allowing 
+      // The do while loop ensures that all layers are tested at least once while allowing
       // layers with small time steps to be updated more than once
       // If a layer with a large time step is after a layer with a small time step the
       // layer with the large time step will wait for multiple timesteps from the preceeding
       // layer.
-      
+
       // this is the time that layers are trying to reach (or get as close as possible)
       auto next_time = manager->Simulation_Time_Object->next_timestep_epoch_time();
 
@@ -527,7 +548,7 @@ int main(int argc, char *argv[]) {
       auto layer_min_next_time = next_time;
       do
       {
-        for ( auto& layer : layers ) 
+        for ( auto& layer : layers )
         {
           auto layer_next_time = layer->next_timestep_epoch_time();
 
@@ -535,12 +556,22 @@ int main(int argc, char *argv[]) {
           if ( layer_next_time <= next_time && layer_next_time <=  prev_layer_time)
           {
             if(count%100==0) std::cout<<"Updating layer: "<<layer->get_name()<<"\n";
-            layer->update_models(); //assume update_models() calls time->advance_timestep()
+#if NGEN_WITH_ROUTING
+            boost::span<double> catchment_span(catchment_outflows.data() + (count * catchment_indexes.size()),
+                                               catchment_indexes.size());
+            boost::span<double> nexus_span(nexus_downstream_flows.data() + (count * nexus_indexes.size()),
+                                           nexus_indexes.size());
+#else
+            boost::span<double> catchment_span;
+            boost::span<double> nexus_span;
+#endif
+            layer->update_models(catchment_span, catchment_indexes,
+                                 nexus_span, nexus_indexes, count); //assume update_models() calls time->advance_timestep()
             prev_layer_time = layer_next_time;
           }
           else
           {
-            layer_min_next_time = prev_layer_time = layer->current_timestep_epoch_time(); 
+            layer_min_next_time = prev_layer_time = layer->current_timestep_epoch_time();
           }
 
           if ( layer_min_next_time > layer_next_time)

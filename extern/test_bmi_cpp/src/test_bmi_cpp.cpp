@@ -110,6 +110,7 @@ void TestBmiCpp::GetValueAtIndices(std::string name, void* dest, int* inds, int 
     for (size_t i = 0; i < count; ++i) {
       out[i] = static_cast<int*>(ptr)[inds[i]];
     }
+    return;
   }
 
   if (type == BMI_TYPE_NAME_FLOAT) {
@@ -124,6 +125,14 @@ void TestBmiCpp::GetValueAtIndices(std::string name, void* dest, int* inds, int 
     long* out = static_cast<long*>(dest);
     for (size_t i = 0; i < count; ++i) {
       out[i] = static_cast<long*>(ptr)[inds[i]];
+    }
+    return;
+  }
+
+  if (type == "char") {
+    char* out = static_cast<char*>(dest);
+    for (size_t i = 0; i < count; ++i) {
+      out[i] = static_cast<char*>(ptr)[inds[i]];
     }
     return;
   }
@@ -165,10 +174,43 @@ void* TestBmiCpp::GetValuePtr(std::string name){
     }
   }
 
+  if (name == NGEN_MASS_STORED) {
+    return &this->mass_stored;
+  }
+  if (name == NGEN_MASS_LEAKED) {
+    return &this->mass_leaked;
+  }
+  if (name == NGEN_MASS_IN) {
+    return this->input_var_1.get();
+  }
+  if (name == NGEN_MASS_OUT) {
+    return this->output_var_1.get();
+  }
+
+  // Serialization support. CREATE / FREE are deliberately absent
+  // here — they're action signals that carry no stored value. A
+  // caller reaching for a pointer to a trigger hits the throw below,
+  // which matches the "this isn't a readable variable" semantic.
+  if (name == NGEN_SERIALIZATION_SIZE) {
+    return &this->serialized_size_var;
+  }
+  if (name == NGEN_SERIALIZATION_STATE) {
+    return this->serialized_state_.data();
+  }
+
   throw std::runtime_error("GetValuePtr called for unknown variable: "+name);
 }
 
 int TestBmiCpp::GetVarItemsize(std::string name){
+  // Triggers (create/free) have no stored value, so reporting a
+  // per-element byte size is meaningless. Throw here for the same
+  // reason GetVarNbytes does: the protocol never asks, and any
+  // external caller gets a real signal rather than a made-up 4-byte
+  // answer.
+  if (name == NGEN_SERIALIZATION_CREATE || name == NGEN_SERIALIZATION_FREE) {
+    throw std::runtime_error(
+        "GetVarItemsize: trigger variable \"" + name + "\" has no byte size" SOURCE_LOC);
+  }
   std::map<std::string,int>::const_iterator iter = this->type_sizes.find(this->GetVarType(name));
   if(iter != this->type_sizes.end()){
     return iter->second;
@@ -190,10 +232,23 @@ std::string TestBmiCpp::GetVarLocation(std::string name){
   if(iter != this->model_var_names.end()){
     return this->model_var_locations[iter - this->model_var_names.begin()];
   }
+  // Serialization reserved names are deliberately NOT handled here:
+  // they have no spatial semantics and the protocol never queries
+  // GetVarLocation. Fall through to the "unknown variable" throw.
   throw std::runtime_error("GetVarLocation called for non-existent variable: "+name+"" SOURCE_LOC);
 }
 
 int TestBmiCpp::GetVarNbytes(std::string name){
+  if (name == NGEN_SERIALIZATION_STATE) {
+    return this->serialized_size_var;
+  }
+  // Trigger variables (create/free) carry no storage — they're
+  // action signals. GetVarItemsize throws for them too; catching
+  // here just lets the error message point at Nbytes explicitly.
+  if (name == NGEN_SERIALIZATION_CREATE || name == NGEN_SERIALIZATION_FREE) {
+    throw std::runtime_error(
+        "GetVarNbytes: trigger variable \"" + name + "\" has no byte size" SOURCE_LOC);
+  }
   int item_size = this->GetVarItemsize(name);
 
   // this will never actually get used, but mimicing the C version...
@@ -211,6 +266,14 @@ int TestBmiCpp::GetVarNbytes(std::string name){
   iter = std::find(this->model_var_names.begin(), this->model_var_names.end(), name);
   if(iter != this->model_var_names.end()){
     item_count = this->model_var_item_count[iter - this->model_var_names.begin()];
+  }
+  iter = std::find(this->mass_balance_var_names.begin(), this->mass_balance_var_names.end(), name);
+  if(iter != this->mass_balance_var_names.end()){
+    item_count = 1;
+  }
+  iter = std::find(this->serialization_var_names.begin(), this->serialization_var_names.end(), name);
+  if(iter != this->serialization_var_names.end()){
+    item_count = 1;
   }
   if(item_count == -1){
     // This is probably impossible to reach--the same conditions above failing will cause a throw
@@ -233,6 +296,14 @@ std::string TestBmiCpp::GetVarType(std::string name){
   if(iter != this->model_var_names.end()){
     return this->model_var_types[iter - this->model_var_names.begin()];
   }
+  iter = std::find(this->mass_balance_var_names.begin(), this->mass_balance_var_names.end(), name);
+  if(iter != this->mass_balance_var_names.end()){
+    return this->mass_balance_var_types[iter - this->mass_balance_var_names.begin()];
+  }
+  iter = std::find(this->serialization_var_names.begin(), this->serialization_var_names.end(), name);
+  if(iter != this->serialization_var_names.end()){
+    return this->serialization_var_types[iter - this->serialization_var_names.begin()];
+  }
   throw std::runtime_error("GetVarType called for non-existent variable: "+name+"" SOURCE_LOC );
 }
 
@@ -247,7 +318,15 @@ std::string TestBmiCpp::GetVarUnits(std::string name){
   }
   iter = std::find(this->model_var_names.begin(), this->model_var_names.end(), name);
   if(iter != this->model_var_names.end()){
-    return this->model_var_types[iter - this->model_var_names.begin()];
+    return this->model_var_units[iter - this->model_var_names.begin()];
+  }
+  iter = std::find(this->mass_balance_var_names.begin(), this->mass_balance_var_names.end(), name);
+  if(iter != this->mass_balance_var_names.end()){
+    return this->mass_balance_var_units[iter - this->mass_balance_var_names.begin()];
+  }
+  iter = std::find(this->serialization_var_names.begin(), this->serialization_var_names.end(), name);
+  if(iter != this->serialization_var_names.end()){
+    return this->serialization_var_units[iter - this->serialization_var_names.begin()];
   }
   throw std::runtime_error("GetVarUnits called for non-existent variable: "+name+"" SOURCE_LOC);
 }
@@ -315,6 +394,24 @@ void TestBmiCpp::SetValueAtIndices(std::string name, int* inds, int len, void* s
 }
 
 void TestBmiCpp::SetValue(std::string name, void* src){
+  if (name == NGEN_SERIALIZATION_CREATE) {
+    this->create_serialization();
+    return;
+  }
+  if (name == NGEN_SERIALIZATION_FREE) {
+    this->free_serialization();
+    return;
+  }
+  if (name == NGEN_SERIALIZATION_STATE) {
+    // The plain BMI SetValue signature doesn't carry a size, but this
+    // model knows its own layout. Pass the declared layout size so
+    // deserialize_state can validate and future expansions of the
+    // layout only need to bump the constant in one place.
+    this->deserialize_state(static_cast<const char*>(src),
+                            this->serialized_state_bytes());
+    return;
+  }
+
   void *dest = this->GetValuePtr(name);
   int nbytes = this->GetVarNbytes(name);
   std::memcpy (dest, src, nbytes);
@@ -517,4 +614,6 @@ void TestBmiCpp::run(long dt)
         *this->output_var_5 = *this->model_var_2 * 1.0;
     }
     this->current_model_time += (double)dt;
+    this->mass_stored = *this->output_var_1 - *this->input_var_1;
+    this->mass_leaked = 0;
 }
