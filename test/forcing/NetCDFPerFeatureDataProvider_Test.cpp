@@ -58,6 +58,31 @@ void NetCDFPerFeatureDataProviderTest::setupForcing()
     forcing_p = std::make_unique<forcing_params>(forcing_file_name, "NetCDF", "2015-12-01 00:00:00", "2015-12-30 23:00:00");
 }
 
+TEST_F(NetCDFPerFeatureDataProviderTest, TestSharedProviderCacheModes)
+{
+    NetCDFPerFeatureDataProvider::cleanup_shared_providers();
+
+    auto get_provider = [&](bool enable_cache) {
+        return NetCDFPerFeatureDataProvider::get_shared_provider(
+            forcing_file_name,
+            forcing_p->simulation_start_t,
+            forcing_p->simulation_end_t,
+            utils::getStdErr(),
+            enable_cache);
+    };
+
+    auto cached = get_provider(true);
+    auto cached_again = get_provider(true);
+    auto uncached = get_provider(false);
+    auto uncached_again = get_provider(false);
+
+    EXPECT_EQ(cached, cached_again);
+    EXPECT_EQ(uncached, uncached_again);
+    EXPECT_NE(cached, uncached);
+
+    NetCDFPerFeatureDataProvider::cleanup_shared_providers();
+}
+
 ///Test AORC Forcing Object
 TEST_F(NetCDFPerFeatureDataProviderTest, TestForcingDataReadUsingIds)
 {

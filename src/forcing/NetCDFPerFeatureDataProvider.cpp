@@ -7,8 +7,9 @@
 #include <netcdf>
 
 std::mutex data_access::NetCDFPerFeatureDataProvider::shared_providers_mutex;
-std::map<std::string, std::shared_ptr<data_access::NetCDFPerFeatureDataProvider>> data_access::NetCDFPerFeatureDataProvider::shared_providers;
-
+std::map<std::pair<std::string, bool>,
+         std::shared_ptr<data_access::NetCDFPerFeatureDataProvider>>
+    data_access::NetCDFPerFeatureDataProvider::shared_providers;
 // limit access outside of compilation unit.
 namespace {
     const size_t N_EXPECTED_FORCING_VARS = 8;
@@ -16,17 +17,27 @@ namespace {
 
 namespace data_access {
 
-std::shared_ptr<NetCDFPerFeatureDataProvider> NetCDFPerFeatureDataProvider::get_shared_provider(std::string input_path, time_t sim_start, time_t sim_end, utils::StreamHandler log_s, bool enable_cache)
+std::shared_ptr<NetCDFPerFeatureDataProvider>
+NetCDFPerFeatureDataProvider::get_shared_provider(
+    std::string input_path,
+    time_t sim_start,
+    time_t sim_end,
+    utils::StreamHandler log_s,
+    bool enable_cache)
 {
     const std::lock_guard<std::mutex> lock(shared_providers_mutex);
-    std::shared_ptr<NetCDFPerFeatureDataProvider> p;
-    if(shared_providers.count(input_path) > 0){
-        p = shared_providers[input_path];
-    } else {
-        p = std::make_shared<data_access::NetCDFPerFeatureDataProvider>(input_path, sim_start, sim_end, log_s, enable_cache);
-        shared_providers[input_path] = p;
+    const auto key = std::make_pair(input_path, enable_cache);
+
+    auto it = shared_providers.find(key);
+    if (it != shared_providers.end()) {
+        return it->second;
     }
-    return p;
+
+    auto provider = std::make_shared<NetCDFPerFeatureDataProvider>(
+        input_path, sim_start, sim_end, log_s, enable_cache);
+
+    shared_providers[key] = provider;
+    return provider;
 }
 
 void NetCDFPerFeatureDataProvider::cleanup_shared_providers()
