@@ -3,6 +3,8 @@
 #include "FileChecker.h"
 #include <Formulation_Manager.hpp>
 
+#include "utilities/JSON_Reader.hpp"
+
 class MultiLayerParserTest : public ::testing::Test {
 
     static std::string find_file(std::vector<std::string> dir_opts, const std::string& basename) {
@@ -63,15 +65,24 @@ class MultiLayerParserTest : public ::testing::Test {
 
 TEST_F(MultiLayerParserTest, TestInit0)
 {
-    manager = std::make_shared<realization::Formulation_Manager>(realization_config_path.c_str());
+    manager = std::make_shared<realization::Formulation_Manager>(ptree_from_json_file(realization_config_path));
 
     ASSERT_TRUE(true);
 }
 
 TEST_F(MultiLayerParserTest, TestRead0)
 {
-    manager = std::make_shared<realization::Formulation_Manager>(realization_config_path.c_str());
-    manager->read(catchment_collection, utils::getStdOut());
+    boost::property_tree::ptree realization_config = ptree_from_json_file(realization_config_path);
+
+    auto possible_simulation_time = realization_config.get_child_optional("time");
+    if (!possible_simulation_time) {
+        throw std::runtime_error("ERROR: No simulation time period defined.");
+    }
+
+    auto simulation_time_config = realization::config::Time(*possible_simulation_time).make_params();
+
+    manager = std::make_shared<realization::Formulation_Manager>(realization_config);
+    manager->read(simulation_time_config, catchment_collection, utils::getStdOut());
 
     ASSERT_TRUE(true);
 }

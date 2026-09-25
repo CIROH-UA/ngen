@@ -1,8 +1,12 @@
-## Realization Configuration
+# Realization Configuration
 
 TODO: Link to Doxygen build
 
+# Description and Top-Level Structure
+
 A Realization Configuration needs to be in [JSON format (JavaScript Object Notation)](https://www.json.org/json-en.html)
+
+## Required Top-Level Keys
 
 The Configuration is a key-value object and must contain these three first level object keys:
 * `global` 
@@ -15,16 +19,75 @@ The Configuration is a key-value object and must contain these three first level
 * `catchments` 
   *  is a key-value object that must include a list of individual catchments
 
-The configuration may *optionally* contain an `output_root` key with a user-defined root output directory as the key, for nexus and catchment outputs.
+## Optional Top-Level Keys
+
+### `output`
+The configuration may optionally contain an `output` object that controls where and how catchment and nexus output are written. All fields are optional:
+
+* `root` — root output directory for both catchment and nexus output; created if it does not already exist (default: the working directory, `./`).
+* `precision` — number of significant digits used when a text (CSV) backend renders values (default: `9`).
+* `catchment` and `nexus` — per-domain settings, each an object with:
+  * `enable` — whether this domain's output is written (default: `true`; set `catchment.enable` to `false` to skip catchment files).
+  * `format` — serialization format, `"csv"` (default) or `"netcdf"`. NetCDF is currently supported for nexus output only.
+  * `grouping` — how a domain's records are distributed across files (the file-*granularity* axis):
+    * `"per_feature"` (default) — one file per catchment / per nexus.
+    * `"per_formulation"` — the catchments of a formulation aggregate into one file with a leading `catchment_id` column (one file per formulation). Fewer, larger files, with columns uniform within each file by construction. (Nexus CSV aggregation is not yet implemented.)
+  * `rank_subdir` — whether an MPI rank's files are placed under a `rank_<N>/` subdirectory (the filesystem-*layout* axis, orthogonal to `grouping`; default `false`). Only affects distributed (multi-rank) runs — a no-op in serial — and reduces filesystem contention when many ranks share a directory. For `per_formulation` under MPI it is applied automatically regardless of this setting, since each rank must write its own file to avoid collisions.
+
+```
+"output": {
+    "root": "/path/to/output/",
+    "catchment": { "enable": true, "format": "csv", "grouping": "per_formulation", "rank_subdir": true },
+    "nexus":     { "enable": true, "format": "csv", "grouping": "per_feature",     "rank_subdir": true }
+}
+```
+
+> [!NOTE]
+> The `output` object supersedes the top-level `output_root`, `disable_catchment_output`, and `per_formulation_nexus_files` keys documented below. Those remain supported for backward compatibility and are honored only when no `output` object is present (with a deprecation warning); new configurations should use `output`.
+
+### `output_root`
+_Deprecated: prefer `output.root`._ The configuration may optionally contain an `output_root` key with a user-defined root output directory as the key, for nexus and catchment outputs.
+
+### `disable_catchment_output`
+_Deprecated: prefer `output.catchment.enable` set to `false`._ The configuration may optionally contain a `disable_catchment_output` key, with a boolean value.  When set to `true`, catchment output data files will not be written (default: `false`).
+
+### `per_formulation_nexus_files`
+_Deprecated: prefer `output.nexus.format` set to `"netcdf"`._ The configuration may optionally contain a `per_formulation_nexus_files` key with a boolean value to indicate per-formulation, NetCDF files should be used for writing nexus data, rather than the default of per-nexus CSV files.  Note that if `per_formulation_nexus_files` is set to `true`, the `catchments` cannot be used to define formulations for individual catchments, and the global formulation config must be used for all catchments.
+
+> [!IMPORTANT]
+> NetCDF support must be turned on for the ngen build to use this option for per-formulation NetCDF file.  This is done by including the `-DNGEN_WITH_NETCDF=ON` arg to CMake on the command line when generating a build directory.
+> 
+> In MPI builds (i.e., `-DNGEN_WITH_MPI=ON`), per-formulation NetCDF files are written by gathering each timestep's nexus data to rank 0, which writes the file via the standard NetCDF C API. To instead have every rank write its own slice in parallel via HDF5-parallel I/O, opt in with `-DNGEN_WITH_PARALLEL_NETCDF=ON`; this additionally requires the NetCDF library itself to provide [parallel I/O support](DEPENDENCIES.md#parallel-netcdf).
+
+### `catchments`
+The configuration may optionally contain a `catchments` key with a list of individual catchments that define their own formulations.  See [more details below](#catchments).
+
+### `routing`
+The configuration may optionally contain a `routing` key with a subobject that defines the path to the t-route config file (`t_route_config_file_with_path`).  It also optionally may contain a path to the t-route source code (`t_route_connection_path`), but this is reserved for advanced usage; generally, t-route should be installed as a package in the normal Python environment.
+
+## Examples of Top-Level Structure
+Note that these are not exhaustive examples.
+
 
 ```
 {
    "global": {},
    "time": {},
    "catchments": {},
-   "output_root": "/path/to/output/"
+   "output": { "root": "/path/to/output/" }
 } 
 ```
+or, using the deprecated top-level keys (still supported when no `output` object is present):
+```
+{
+   "global": {},
+   "time": {},
+   "output_root": "/path/to/output/",
+   "per_formulation_nexus_files": true|false
+} 
+```
+
+# The Global Section
 
 The `global` key-value object must contain the following two object keys:
 * `formulations` 
@@ -54,6 +117,8 @@ The `global` key-value object must contain the following two object keys:
 },  
 ```
 
+# The Time Section
+
 The `time` key-value object must contain the following three keys:
 * `start_time`
   * defines the UTC start time of the simulation and must be in the form `yyyy-mm-dd hh:mm:ss`
@@ -70,11 +135,13 @@ The `time` key-value object must contain the following three keys:
 },
 ```
 
+# Individual Catchments
+
 The `catchments` key-value object must contain a list of all of the catchment object keys that will have defined formulations, and each catchment key will have the following format:
 * `cat-` 
   * followed by the unique integer identifier for the catchment
 
-Each catchment is a key-value object and must have the following two object keys:
+Each catchment is a key-value object and must have the following two object keys, similar to the `global` section:
 * `formulations`
   * a list of formulation key-value objects that defines the required formulation(s), and each formulation object has a key `name` and value of a model that is registered with the ngen framework and includes a key-value subobject for `params`
   * Note: future versions could support breaking up `params` into additional key-value subobjects for `options` and `initial_conditions`
@@ -130,7 +197,19 @@ Each catchment is a key-value object and must have the following two object keys
     },
 ```
 
+# The Routing Section
+
+```json
+    "routing": {
+        "t_route_config_file_with_path": "extern/t-route/test/input/yaml/ngen.yaml"
+    }
+```
+
+# A Full Example
+
 An [example realization configuration](https://github.com/NOAA-OWP/ngen/blob/master/data/example_realization_config.json).
+
+# A Note on BMI Models
 
 BMI is a commonly used model interface and formulation type used in ngen. [BMI documenation](https://github.com/NOAA-OWP/ngen/blob/master/doc/BMI_MODELS.md) with an example [for both Linux and macOS realizations](https://github.com/NOAA-OWP/ngen/blob/master/data/example_realization_config_w_bmi_c__lin_mac.json).
 
