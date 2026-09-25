@@ -389,14 +389,14 @@ target_include_directories(ngen PUBLIC "${NGEN_INC_DIR}")
 add_subdirectory("src/core")
 add_subdirectory("src/mediator")
 add_subdirectory("src/geojson")
+add_subdirectory("src/utilities/logging")
+add_subdirectory("src/utilities/python")
 add_subdirectory("src/bmi")
 add_subdirectory("src/realizations/catchment")
 add_subdirectory("src/forcing")
 add_subdirectory("src/utilities")
-add_subdirectory("src/utilities/logging")
 add_subdirectory("src/utilities/bmi")
 add_subdirectory("src/utilities/output")
-add_subdirectory("src/utilities/python")
 
 target_link_libraries(ngen
     PUBLIC
