@@ -347,8 +347,45 @@ namespace realization {
                     if (write_enabled->compare("false") == 0 || write_enabled->compare("no") == 0 || write_enabled->compare("0") == 0) {
                         return false;
                     }
-                } 
+                }
                 return true;
+            }
+
+            /**
+             * @brief Check whether nex-*_output.csv files should hold each catchment's own
+             * lateral flow (keyed by catchment id) instead of the default: each nexus's
+             * combined flow (keyed by nexus id, summing every catchment that drains into it).
+             *
+             * The default preserves existing behavior and existing consumers exactly.
+             * Opting in matters at a confluence, where more than one catchment shares a
+             * nexus: the default combines their contributions into one number with no way
+             * to recover which flowpath each part belongs to, which is wrong input for a
+             * routing tool that expects one lateral inflow value per flowpath. Since a
+             * catchment's own id is also its own flowpath's id, keying by catchment id
+             * avoids that combination happening in the first place -- nothing needs to be
+             * disaggregated downstream.
+             *
+             * @code{.cpp}
+             * // Example config:
+             * // ...
+             * // "nexus_output_by_catchment": true
+             * // ...
+             * const auto manager = Formulation_Manger(CONFIG);
+             * manager.is_nexus_output_by_catchment_enabled();
+             * //> true
+             * @endcode
+             *
+             * @return bool
+             */
+            bool is_nexus_output_by_catchment_enabled() const {
+                const auto enabled = this->tree.get_optional<std::string>("nexus_output_by_catchment");
+                if (enabled != boost::none && *enabled != "") {
+                    // if any variation of "true" or "yes" or 1 is found, return true
+                    if (enabled->compare("true") == 0 || enabled->compare("yes") == 0 || enabled->compare("1") == 0) {
+                        return true;
+                    }
+                }
+                return false;
             }
 
             /**

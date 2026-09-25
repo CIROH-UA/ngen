@@ -10,16 +10,17 @@ namespace ngen
         public:
         
         SurfaceLayer(
-                const LayerDescription& desc, 
-                const std::vector<std::string>& p_u, 
-                const Simulation_Time& s_t, 
-                feature_type& f, 
-                geojson::GeoJSON cd, 
+                const LayerDescription& desc,
+                const std::vector<std::string>& p_u,
+                const Simulation_Time& s_t,
+                feature_type& f,
+                geojson::GeoJSON cd,
                 long idx,
                 const std::vector<std::string>& n_u,
-                std::unordered_map<std::string, std::ofstream>& output_files) : 
-                    Layer(desc,p_u,s_t,f,cd,idx), 
-                    nexus_ids(n_u), 
+                std::unordered_map<std::string, std::ofstream>& output_files,
+                std::unordered_map<std::string, std::ofstream>* catchment_lateral_flow_files = nullptr) :
+                    Layer(desc,p_u,s_t,f,cd,idx,catchment_lateral_flow_files),
+                    nexus_ids(n_u),
                     nexus_outfiles(output_files)
         {
 

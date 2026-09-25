@@ -63,6 +63,7 @@ int mpi_num_procs;
 #include <DomainLayer.hpp>
 
 std::unordered_map<std::string, std::ofstream> nexus_outfiles;
+std::unordered_map<std::string, std::ofstream> catchment_lateral_outfiles;
 
 void ngen::exec_info::runtime_summary(std::ostream& stream) noexcept
 {
@@ -435,19 +436,28 @@ int main(int argc, char *argv[]) {
     //catchment_collection.reset();
     nexus_collection.reset();
 
-    //Still hacking nexus output for the moment
-    for(const auto& id : features.nexuses()) {
-        #if NGEN_WITH_MPI
-        if (mpi_num_procs > 1) {
-            if (!features.is_remote_sender_nexus(id)) {
-                nexus_outfiles[id].open(manager->get_output_root() + id + "_output.csv", std::ios::trunc);
+    // Still hacking nexus output for the moment.
+    // By default, each nexus's own id keys its combined (summed) flow, matching every
+    // existing consumer. When nexus_output_by_catchment is enabled, that combination is
+    // skipped -- at a confluence, it loses per-flowpath identity with no way to recover
+    // it downstream -- and these files are opened per catchment instead (see the matching
+    // catchment_lateral_outfiles loop below), so we don't open (and shouldn't write) the
+    // nexus-keyed ones here.
+    bool nexus_output_by_catchment = manager->is_nexus_output_by_catchment_enabled();
+    if (!nexus_output_by_catchment) {
+        for(const auto& id : features.nexuses()) {
+            #if NGEN_WITH_MPI
+            if (mpi_num_procs > 1) {
+                if (!features.is_remote_sender_nexus(id)) {
+                    nexus_outfiles[id].open(manager->get_output_root() + id + "_output.csv", std::ios::trunc);
+                }
+            } else {
+              nexus_outfiles[id].open(manager->get_output_root() + id + "_output.csv", std::ios::trunc);
             }
-        } else {
-          nexus_outfiles[id].open(manager->get_output_root() + id + "_output.csv", std::ios::trunc);
+            #else
+            nexus_outfiles[id].open(manager->get_output_root() + id + "_output.csv", std::ios::trunc);
+            #endif
         }
-        #else
-        nexus_outfiles[id].open(manager->get_output_root() + id + "_output.csv", std::ios::trunc);
-        #endif
     }
 
     std::cout<<"Running Models"<<std::endl;
@@ -488,14 +498,25 @@ int main(int argc, char *argv[]) {
         layers[i] = std::make_shared<ngen::DomainLayer>(desc, sim_time, features, 0, formulation);
       }
       else{
-        for ( std::string id : features.catchments(keys[i]) ) { cat_ids.push_back(id); }
+        for ( std::string id : features.catchments(keys[i]) ) {
+          cat_ids.push_back(id);
+          if (nexus_output_by_catchment) {
+            // one file per catchment, named with the same "nex-" prefix and format the
+            // per-nexus files above use (so no downstream consumer needs to change), but
+            // keyed by the catchment's own id rather than the (possibly shared) nexus it
+            // drains into -- see Layer::update_models()
+            std::string numeric_id = id.substr(id.find('-') + 1);
+            catchment_lateral_outfiles[id].open(manager->get_output_root() + "nex-" + numeric_id + "_output.csv", std::ios::trunc);
+          }
+        }
+        auto* lateral_outfiles = nexus_output_by_catchment ? &catchment_lateral_outfiles : nullptr;
         if (keys[i] != 0 )
         {
-          layers[i] = std::make_shared<ngen::Layer>(desc, cat_ids, sim_time, features, catchment_collection, 0);
+          layers[i] = std::make_shared<ngen::Layer>(desc, cat_ids, sim_time, features, catchment_collection, 0, lateral_outfiles);
         }
         else
         {
-          layers[i] = std::make_shared<ngen::SurfaceLayer>(desc, cat_ids, sim_time, features, catchment_collection, 0, nexus_subset_ids, nexus_outfiles);
+          layers[i] = std::make_shared<ngen::SurfaceLayer>(desc, cat_ids, sim_time, features, catchment_collection, 0, nexus_subset_ids, nexus_outfiles, lateral_outfiles);
         }
       }
 

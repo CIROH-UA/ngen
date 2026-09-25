@@ -307,7 +307,11 @@ endif()
 # -----------------------------------------------------------------------------
 if(NGEN_WITH_PYTHON)
     find_package(Python 3.6.8 REQUIRED COMPONENTS Interpreter Development NumPy)
-    if(${Python_NumPy_VERSION} VERSION_GREATER_EQUAL 2)
+    if(NOT DEFINED Python_NumPy_VERSION OR Python_NumPy_VERSION STREQUAL "")
+        message(WARNING "Could not determine NumPy version (Python_NumPy_VERSION is empty); "
+                        "skipping the numpy<2 compatibility check. Ensure the selected Python "
+                        "environment has numpy<2.0.0 installed.")
+    elseif(Python_NumPy_VERSION VERSION_GREATER_EQUAL 2)
         message(FATAL_ERROR "Found numpy version \"${Python_NumPy_VERSION}\"; numpy>=2.0.0 is not currently supported")
     endif()
     set(PYTHON_EXECUTABLE ${Python_EXECUTABLE}) # Case-sensitive difference

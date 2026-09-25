@@ -47,12 +47,12 @@ Note that this will be done in the NGen repo configuration, so it can then be co
 
 ## Building Libraries
 
-If you plan on using any of the NextGen python modules (e.g. routing with t-route), you likely need to build a python environment for NextGen.  An example environment is included in `summa/test_ngen/python_env/environment.yml`. ON a Linux machine, you can run
-    $ cd ${NGEN_DIR}/ngen/extern/summa/summa/test_ngen/python_env
+If you plan on using any of the NextGen python modules (e.g. routing with t-route), you likely need to build a python environment for NextGen.  An example environment is included in `summa/utils/test/test_ngen/python_env/environment.yml`. ON a Linux machine, you can run
+    $ cd ${NGEN_DIR}/ngen/extern/summa/summa/utils/test/test_ngen/python_env
     $ conda env create -f environment.yml -n pyngen  
     $ conda activate pyngen
 On a Mac, you can run 
-    $ cd ${NGEN_DIR}/ngen/extern/summa/summa/test_ngen/python_env
+    $ cd ${NGEN_DIR}/ngen/extern/summa/summa/utils/test/test_ngen/python_env
     $ conda install -n base -c conda-forge mamba -y
     $ export CONDA_SUBDIR=osx-arm64
     $ mamba env create -f environment.yml -n pyngen
@@ -103,7 +103,7 @@ Copy this script (perhaps modified) to the directory above your main ngen direct
     $ ./build_ngen.bash
 
 To run test basin at gauge 01073000, still in the main ngen directory, run
-    $ ./cmake_build/ngen ./data/gauge_01073000/gauge_01073000.gpkg '' ./test/data/routing/gauge_01073000.gpkg '' ./extern/summa/summa/test_ngen/example_realization_config_w_summa_bmi_routing.json
+    $ ./cmake_build/ngen ./data/gauge_01073000/gauge_01073000.gpkg '' ./test/data/routing/gauge_01073000.gpkg '' ./extern/summa/summa/utils/test/test_ngen/example_realization_config_w_summa_bmi_routing.json
 To test without routing, run the above command leaving out `_routing`.  Be sure to install and activate a python environment that supports the routing if you wish to use routing, as described above. 
 
-This command can be run as `./extern/summa/summa/test_ngen/example_run.sh` also, from the main ngen directory.  Non-routed output is currently commented out.
+This command can be run as `./extern/summa/summa/utils/test/test_ngen/example_run.sh` also, from the main ngen directory.  Non-routed output is currently commented out.
