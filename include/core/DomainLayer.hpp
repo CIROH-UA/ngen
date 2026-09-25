@@ -4,7 +4,7 @@
 #include "Catchment_Formulation.hpp"
 #include "Layer.hpp"
 #include "State_Exception.hpp"
-#include "CatchmentOutputsMgr.hpp"
+#include "utilities/output/CatchmentOutputsMgr.hpp"
 
 #include <memory>
 #include <string>
