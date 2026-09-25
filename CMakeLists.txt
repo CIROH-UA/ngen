@@ -401,6 +401,10 @@ add_subdirectory("src/realizations/catchment")
 add_subdirectory("src/forcing")
 add_subdirectory("src/utilities")
 add_subdirectory("src/utilities/bmi")
+target_link_libraries(realizations_catchment PUBLIC
+    NGen::forcing
+    NGen::bmi_protocols
+)
 add_subdirectory("src/utilities/output")
 
 target_link_libraries(ngen
