@@ -61,3 +61,9 @@ TEST_F(UnitsHelper_Test, TestConvertArrayDontModifyInputNoOp){
     ASSERT_EQ( expected,  data2);
     ASSERT_EQ( data.at(2), 3);
 }
+
+TEST_F(UnitsHelper_Test, TestUnparseableUnitsThrowRepeatedly){
+    // The second call is answered from the cached failure and must still throw
+    ASSERT_THROW(UnitsHelper::get_converted_value("m", 1, "none"), std::runtime_error);
+    ASSERT_THROW(UnitsHelper::get_converted_value("m", 1, "none"), std::runtime_error);
+}
