@@ -2,6 +2,7 @@
 #define __NGEN_SURFACE_LAYER__
 
 #include "Layer.hpp"
+#include "utilities/output/NexusOutputsMgr.hpp"
 
 namespace ngen
 {
@@ -16,11 +17,10 @@ namespace ngen
                 feature_type& f, 
                 geojson::GeoJSON cd, 
                 long idx,
-                const std::vector<std::string>& n_u,
-                std::unordered_map<std::string, std::ofstream>& output_files) : 
-                    Layer(desc,p_u,s_t,f,cd,idx), 
-                    nexus_ids(n_u), 
-                    nexus_outfiles(output_files)
+                const std::shared_ptr<utils::NexusOutputsMgr> &nexus_outputs_mgr,
+                std::shared_ptr<utils::CatchmentOutputsMgr> catchment_output_mgr) :
+                    Layer(desc,p_u,s_t,f,cd,idx,catchment_output_mgr),
+                    nexus_outputs_mgr(nexus_outputs_mgr)
         {
 
         }
@@ -28,12 +28,14 @@ namespace ngen
         /***
          * @brief Run one simulation timestep for each model in this layer
         */
-        void update_models() override;
+        void update_models(boost::span<double> catchment_outflows, 
+                           std::unordered_map<std::string, int> const& catchment_indexes,
+                           boost::span<double> nexus_downstream_flows,
+                           std::unordered_map<std::string, int> const& nexus_indexes,
+                           int current_step) override;
 
         private:
-
-        std::vector<std::string> nexus_ids;
-        std::unordered_map<std::string, std::ofstream>& nexus_outfiles;
+        std::shared_ptr<utils::NexusOutputsMgr> nexus_outputs_mgr;
     };
 }
 

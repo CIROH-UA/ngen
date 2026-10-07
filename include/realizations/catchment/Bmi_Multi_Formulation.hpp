@@ -10,6 +10,8 @@
 #include "OptionalWrappedDataProvider.hpp"
 #include "ConfigurationException.hpp"
 #include "ExternalIntegrationException.hpp"
+#include "utilities/logging_utils.h"
+#include <mediator/UnitsHelper.hpp>
 
 #define BMI_REALIZATION_CFG_PARAM_REQ__MODULES "modules"
 #define BMI_REALIZATION_CFG_PARAM_OPT__DEFAULT_OUT_VALS "default_output_values"
@@ -41,6 +43,15 @@ namespace realization {
                 : Bmi_Formulation(std::move(id), forcing_provider, output_stream) { };
 
         virtual ~Bmi_Multi_Formulation() {};
+
+        virtual void check_mass_balance(const int& iteration, const int& total_steps, const std::string& timestamp) const final {
+            for( const auto &module : modules ) {
+                // TODO may need to check on outputs form each module indepdently???
+                // Right now, the assumption is that if each component is mass balanced
+                // then the entire formulation is mass balanced
+                module->check_mass_balance(iteration, total_steps, timestamp);
+            }
+        };
 
         /**
          * Convert a time value from the model to an epoch time in seconds.
@@ -342,7 +353,14 @@ namespace realization {
             return modules[get_index_for_primary_module()]->get_data_start_time();
         }
 
-        std::string get_output_line_for_timestep(int timestep, std::string delimiter) override;
+        std::vector<double> get_output_values_for_timestep(int timestep) override;
+
+        /**
+         * Get this formulation's output fields (header name + units) in output order. The units come
+         * from the submodule that produces each variable -- the same source its value comes from --
+         * by reusing the submodules' own output fields.
+         */
+        std::vector<utils::OutputField> get_output_fields() const override;
 
         double get_response(time_step_t t_index, time_step_t t_delta) override;
 
@@ -388,28 +406,20 @@ namespace realization {
         double get_value(const CatchmentAggrDataSelector& selector, data_access::ReSampleMethod m) override
         {
             std::string output_name = selector.get_variable_name();
-            time_t init_time = selector.get_init_time();
-            long duration_s = selector.get_duration_secs();
-            std::string output_units = selector.get_output_units();
-            
             // If not found ...
             if (availableData.empty() || availableData.find(output_name) == availableData.end()) {
                 throw std::runtime_error(get_formulation_type() + " cannot get output value for unknown " + output_name + SOURCE_LOC);
             }
-            return availableData[output_name]->get_value(CatchmentAggrDataSelector(this->get_catchment_id(),output_name, init_time, duration_s, output_units), m);
+            return availableData[output_name]->get_value(selector, m);
         }
 
         std::vector<double> get_values(const CatchmentAggrDataSelector& selector, data_access::ReSampleMethod m) override
         {
             std::string output_name = selector.get_variable_name();
-            time_t init_time = selector.get_init_time();
-            long duration_s = selector.get_duration_secs();
-            std::string output_units = selector.get_output_units();
-
             if (availableData.empty() || availableData.find(output_name) == availableData.end()) {
                 throw std::runtime_error(get_formulation_type() + " cannot get output values for unknown " + output_name + SOURCE_LOC);
             }
-            return availableData[output_name]->get_values(CatchmentAggrDataSelector(this->get_catchment_id(),output_name, init_time, duration_s, output_units), m);
+            return availableData[output_name]->get_values(selector, m);
         }
 
         bool is_bmi_input_variable(const std::string &var_name) const override;
@@ -517,6 +527,8 @@ namespace realization {
             }
         }
 
+        void update(time_step_t t_index, time_step_t t_delta) override;
+
     protected:
 
         /**
@@ -526,52 +538,6 @@ namespace realization {
          * @param needs_param_validation
          */
         void create_multi_formulation(geojson::PropertyMap properties, bool needs_param_validation);
-
-        /**
-         * Get value for some BMI model variable at a specific index.
-         *
-         * Function gets the value for a provided variable, retrieving the variable array from the backing model of the
-         * appropriate nested formulation. The function then returns the specific value at the desired index, cast as a
-         * double type.
-         *
-         * The function makes several assumptions:
-         *
-         *     1. `index` is within array bounds
-         *     2. `var_name` corresponds to a BMI variable for some nested module.
-         *     3. `var_name` is sufficient to identify what value needs to be retrieved
-         *     4. the type for output variable allows the value to be cast to a `double` appropriately
-         *
-         * Item 3. here can be inferred from 2. for non-multi formulations.  For multi formulations, this means the
-         * provided ``var_name`` must either be a unique BMI variable name among all nested module, or a unique mapped
-         * alias to a specific variable in a specific module.
-         *
-         * It falls to users of this function (i.e., other functions) to ensure these assumptions hold before invoking.
-         *
-         * @param index
-         * @param var_name
-         * @return
-         */
-        double get_var_value_as_double(const int& index, const std::string& var_name) override {
-            auto data_provider_iter = availableData.find(var_name);
-            if (data_provider_iter == availableData.end()) {
-                throw external::ExternalIntegrationException(
-                        "Multi BMI formulation can't find correct nested module for BMI variable " + var_name + SOURCE_LOC);
-            }
-            // Otherwise, we have a provider, and we can cast it based on the documented assumptions
-            try {
-                auto const& nested_module = data_provider_iter->second;
-                long nested_module_time = nested_module->get_data_start_time() + ( this->get_model_current_time() - this->get_model_start_time() );
-                auto selector = CatchmentAggrDataSelector(this->get_catchment_id(),var_name,nested_module_time,this->record_duration(),"1");
-                //TODO: After merge PR#405, try re-adding support for index
-                return nested_module->get_value(selector);
-            }
-            // If there was any problem with the cast and extraction of the value, throw runtime error
-            catch (std::exception &e) {
-                throw std::runtime_error("Multi BMI formulation can't use associated data provider as a nested module"
-                                         " when attempting to get values of BMI variable " + var_name + SOURCE_LOC);
-                // TODO: look at adjusting defs to move this function up in class hierarchy (or at least add TODO there)
-            }
-        }
 
         /**
          * Initialize the deferred associations with the providers in @ref deferredProviders.
@@ -640,6 +606,17 @@ namespace realization {
             // Since this is a nested formulation, support usage of the '{{id}}' syntax for init config file paths.
             Catchment_Formulation::config_pattern_substitution(properties, BMI_REALIZATION_CFG_PARAM_REQ__INIT_CONFIG,
                                                                "{{id}}", id);
+
+            // Inject a three-part compound identity on the submodule BEFORE
+            // create_formulation runs, so that compound_id() is fully qualified
+            // during submodule construction with the following structure:
+            // "<catchment.submodule_index>:<submodule-mtn>:<multi-mtn>"
+            // Peek the submodule's own model_type_name from the config map —
+            // we cannot wait for create_formulation() to populate it on
+            // the submodule because we need the compound in place first.
+            std::string submodule_mtn =
+                properties.at(BMI_REALIZATION_CFG_PARAM_REQ__MODEL_TYPE).as_string();
+            mod->set_compound_id(identifier + ":" + submodule_mtn + ":" + get_model_type_name());
 
             // Call create_formulation to perform the rest of the typical initialization steps for the formulation.
             mod->create_formulation(properties);

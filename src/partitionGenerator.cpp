@@ -104,15 +104,16 @@ void write_remote_connections(const PartitionVSet& catchment_part, const Partiti
  * 
  * @param network 
  * @param num_partitions 
- * @param num_catchments
- * @param catchment_part 
+ * @param catchment_part  - which catchments will be simulation on each partition
+ * @param nexus_part - which nexuses have contributing catchments on each partition
  */
-void generate_partitions(network::Network& network, const int& num_partitions, const int& num_catchments, PartitionVSet& catchment_part,
-     PartitionVSet& nexus_part)
+void generate_partitions(network::Network& network, const int& num_partitions, PartitionVSet& catchment_part, PartitionVSet& nexus_part)
 {
+    auto catchments = network.filter("cat", network::SortOrder::TransposedDepthFirstPreorder);
+
     int partition = 0;
     int counter = 0;
-    int total = num_catchments;
+    int total = size(catchments);
     int partition_size = total/num_partitions;
     int partition_size_norm = partition_size;
     int remainder;
@@ -131,9 +132,7 @@ void generate_partitions(network::Network& network, const int& num_partitions, c
     nexus_set.reserve(partition_size);
     std::string part_id, partition_str;
 
-    std::string up_nexus;
-    std::string down_nexus;
-    for(const auto& catchment : network.filter("cat", network::SortOrder::TransposedDepthFirstPreorder)){
+    for(const auto& catchment : catchments){
             if (partition < remainder)
                 partition_size = partition_size_plus1;
             else
@@ -145,7 +144,7 @@ void generate_partitions(network::Network& network, const int& num_partitions, c
             for( auto downstream : network.get_destination_ids(catchment) ){
                 nexus_set.emplace(downstream);
             }
-            if(nexus_set.size() == 0){
+            if(nexus_set.size() == 0 && catchment.find("SENTINEL") == std::string::npos){
                 std::cerr<<"Error: Catchment "<<catchment<<" has no destination nexus.\n";
                 exit(1);
             }
@@ -159,14 +158,7 @@ void generate_partitions(network::Network& network, const int& num_partitions, c
             counter++;
             if(counter == partition_size)
             {
-                //std::cout<<"nexus "<<nexus<<" is remote DOWN on partition "<<partition<<std::endl;
                 //FIXME partitioning shouldn't have to assume dendritic network
-                std::vector<std::string> destinations = network.get_destination_ids(catchment);
-                if(destinations.size() == 0){
-                    std::cerr<<"Error: Catchment "<<catchment<<" has no destination nexus.\n";
-                    exit(1);
-                }
-                down_nexus = destinations[0];
 
                 part_id = std::to_string(partition);  // Is id used?
                 partition_str = std::to_string(partition);
@@ -181,12 +173,6 @@ void generate_partitions(network::Network& network, const int& num_partitions, c
 
                 partition++;
                 counter = 0;
-                //std::cout<<"\nnexus "<<nexus<<" is remote UP on partition "<<partition<<std::endl;
-
-                //this nexus overlaps partitions
-                //Handled above by ensure all up/down stream nexuses are recorded
-                up_nexus = down_nexus;
-                //std::cout<<"\nin partition "<<partition<<":"<<std::endl;
             }
     }
 
@@ -451,11 +437,8 @@ int main(int argc, char* argv[])
 
     std::string link_key = "toid";
   
-    Network catchment_network(catchment_collection, &link_key);
     //Assumes dendritic, can add check in network if needed.
     PartitionVSet catchment_part, nexus_part;
-    
-    //catchment_network.print_network();
 
     //build the remote connections from network
     // read the nexus hydrofabric, reuse the catchments
@@ -487,11 +470,47 @@ int main(int argc, char* argv[])
     //Do this before linking features so that the alt ids can lookup the correct feature
     global_nexus_collection->update_ids("id");
     global_nexus_collection->link_features_from_property(nullptr, &link_key);
+
+    // ngen misbehaves in gathering and storing output when a terminal
+    // nexus is fed by multiple catchments partitioned to different
+    // processes. This was recorded as NOAA-OWP/ngen#284 and NGWPC-6553.
+    //
+    // Address that here by inserting sentinel flowpaths downstream of
+    // those nexuses. Those sentinels will be assigned to specific
+    // processes, which will then properly receive all of the flow for
+    // the nexus in question.
+    //
+    // These features will not exist in the hydrofabric
+    // GeoJSON/GeoPackage. As implemented, that means that they will
+    // simply be ignored when ngen figures out what features to
+    // simulate on each process.
+    //
+    // Store the sentinels separately to avoid iterator invalidation
+    // from inserting them eagerly
+    std::vector<std::shared_ptr<geojson::FeatureBase>> sentinels;
+    for (auto& feature : *global_nexus_collection)
+    {
+        auto id = feature->get_id();
+        auto type = id.substr(0,3);
+        if (hy_features::identifiers::isNexus(type)) {
+            if (feature->get_number_of_destination_features() == 0) {
+                std::string sentinel_id = "wb-TERMINAL_SENTINEL-" + feature->get_id();
+                geojson::Feature sentinel_feature = std::make_shared<geojson::SentinelFeature>(sentinel_id);
+                sentinels.push_back(sentinel_feature);
+                feature->add_destination_feature(sentinel_feature.get());
+            }
+        }
+    }
+    for (auto& sentinel : sentinels)
+    {
+        global_nexus_collection->add_feature(sentinel);
+    }
+
     // make a global network
     Network global_network(global_nexus_collection);
 
     //Generate the partitioning
-    generate_partitions(global_network, num_partitions, num_catchments, catchment_part, nexus_part);
+    generate_partitions(global_network, num_partitions, catchment_part, nexus_part);
 
     //global_network.print_network();
 

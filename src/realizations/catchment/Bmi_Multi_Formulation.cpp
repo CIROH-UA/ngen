@@ -1,4 +1,5 @@
 #include <NGenConfig.h>
+#include <all.h>
 
 #include "Bmi_Multi_Formulation.hpp"
 #include "Formulation_Constructors.hpp"
@@ -286,7 +287,54 @@ const std::string &Bmi_Multi_Formulation::get_config_mapped_variable_name(const 
     return output_var_name;
 }
 
-std::string Bmi_Multi_Formulation::get_output_line_for_timestep(int timestep, std::string delimiter) {
+std::vector<utils::OutputField> Bmi_Multi_Formulation::get_output_fields() const {
+    // Index the submodules' own output fields by source variable. Each submodule already describes
+    // each variable it produces as a complete OutputField (source name, units, and any attributes),
+    // so this is one lookup covering every variable any submodule can produce.
+    std::unordered_map<std::string, utils::OutputField> field_by_source;
+    for (const auto &module : modules) {
+        for (const auto &field : module->get_output_fields()) {
+            field_by_source.emplace(field.source_name, field);
+        }
+    }
+
+    // Emit this formulation's selected outputs, in its configured order. The multi selects a subset
+    // of the submodules' variables (output_variable_names) and gives them its own output names
+    // (output_header_fields, 1:1 with the variables, enforced at construction). For each, reuse the
+    // producing submodule's field -- keeping its units and metadata -- but relabel output_name with
+    // this formulation's header, which may alias differently than the submodule's. A selected
+    // variable that no submodule produces yields a bare field with no units.
+    const std::vector<std::string> &variables = get_output_variable_names();
+    boost::span<const std::string> headers = get_output_header_field_names();
+    std::vector<utils::OutputField> fields;
+    fields.reserve(variables.size());
+    for (std::size_t i = 0; i < variables.size(); ++i) {
+        const auto it = field_by_source.find(variables[i]);
+        if (it != field_by_source.end()) {
+            // Reuse the producing submodule's field (its units and metadata), relabeled with this
+            // formulation's output name.
+            fields.push_back(it->second);
+            fields.back().output_name = headers[i];
+        }
+        else {
+            // Reached when a configured output variable is valid (check_output_var_names verified it
+            // is in availableData at construction) but is not produced by any submodule -- most
+            // commonly a forcing variable echoed to output. Such a variable is supplied by a non-
+            // submodule provider (e.g. the forcing provider), which is not indexed in
+            // field_by_source, so we have no units for it here: the DataProvider interface exposes
+            // values (get_value/get_values) but not a variable's native units. We therefore emit the
+            // column with no units (nullopt) rather than dropping it -- the variable still produces a
+            // value each timestep via get_output_values_for_timestep, and get_output_fields must stay
+            // 1:1 with those values or the header and data rows misalign.
+            // TODO: source units for provider-supplied (e.g. forcing) output variables once the
+            // provider interface can report them.
+            fields.emplace_back(variables[i], headers[i], std::nullopt);
+        }
+    }
+    return fields;
+}
+
+std::vector<double> Bmi_Multi_Formulation::get_output_values_for_timestep(int timestep) {
     // TODO: have to do some figuring out to make sure this isn't ambiguous (i.e., same output var name from two modules)
     // TODO: need to verify that output variable names are valid, or else warn and return default
 
@@ -298,31 +346,26 @@ std::string Bmi_Multi_Formulation::get_output_line_for_timestep(int timestep, st
 
     // Start by first checking whether we are NOT just using the last module's values
     if (!is_out_vars_from_last_mod) {
-
         // TODO: see Github issue 355: this design (and formulation output handling in general) needs to be reworked
-        // Clear anything currently in the multi formulation's stream buffer
-        output_text_stream->str(std::string());
-
         const std::vector<std::string> &output_var_names = get_output_variable_names();
-        // This almost certainly should never happen, but just to be safe ...
-        if (output_var_names.empty()) { return ""; }
-
-        // Do the first separately, without the leading comma
-        *output_text_stream << get_var_value_as_double(0, output_var_names[0]);
-
-        // Do the rest with a leading comma
-        for (int i = 1; i < output_var_names.size(); ++i) {
-            *output_text_stream << delimiter << get_var_value_as_double(0, output_var_names[i]);
+        std::vector<double> values;
+        values.reserve(output_var_names.size());
+        // Fetch values through the unit-checked/converting get_value path; output_units is empty, so
+        // values are returned unconverted, positionally aligned with the names.
+        time_t model_time = convert_model_time(get_model_current_time()) + get_bmi_model_start_time_forcing_offset_s();
+        for (const std::string &name : output_var_names) {
+            std::string output_units = "";
+            values.push_back(get_value(CatchmentAggrDataSelector(this->get_catchment_id(), name, model_time, 3600, output_units), MEAN));
         }
-        return output_text_stream->str();
+        return values;
     }
     // Otherwise, use the default behavior, which means we either
     //   - were originally set to use the default of getting the output of the last module
     //   - tried a more complex config, but ran into an error, and are needing to revert to the default
-    return modules.back()->get_output_line_for_timestep(timestep, delimiter);
+    return modules.back()->get_output_values_for_timestep(timestep);
 }
 
-double Bmi_Multi_Formulation::get_response(time_step_t t_index, time_step_t t_delta) {
+void Bmi_Multi_Formulation::update(time_step_t t_index, time_step_t t_delta) {
     if (modules.empty()) {
         throw std::runtime_error("Trying to get response of improperly created empty BMI multi-module formulation.");
     }
@@ -367,10 +410,14 @@ double Bmi_Multi_Formulation::get_response(time_step_t t_index, time_step_t t_de
     while (next_time_step_index <= t_index) {
         for (nested_module_ptr &module : modules) {
             // By setting up in create function, these will now have their own providers
-            module->get_response(t_index, t_delta);
+            module->update(t_index, t_delta);
         }
         next_time_step_index++;
     }
+}
+
+double Bmi_Multi_Formulation::get_response(time_step_t t_index, time_step_t t_delta) {
+    update(t_index, t_delta);
     // Find the right module for the main output, checking primary first
     int index = get_index_for_primary_module();
     std::vector<std::string> out_var_names = modules[index]->get_output_variable_names();
@@ -385,8 +432,28 @@ double Bmi_Multi_Formulation::get_response(time_step_t t_index, time_step_t t_de
             }
         }
     }
-
-    return modules[index]->get_var_value_as_double(0, get_bmi_main_output_var());
+    double var_value;
+    try{
+        var_value = modules[index]->get_value(CatchmentAggrDataSelector(this->get_catchment_id(), get_bmi_main_output_var(), 0, 0, "m"), MEAN);
+    }
+    catch(UnitsHelper::unit_conversion_exception &uce){
+        bool new_error = UnitsHelper::record_unit_conversion_fault(uce, "Bmi_Multi_Formulation::get_response", get_bmi_main_output_var());
+        if (new_error) {
+            std::stringstream ss;
+            ss << "Unit conversion failure:"
+                << " requester {'Get Response (Multi Formulation)"
+                << "' catchment '" << get_catchment_id()
+                << "' variable '" << get_bmi_main_output_var()
+                << "' units 'm'}"
+                << " provider {'" << uce.provider_model_name
+                << "' source variable '" << uce.provider_var_name << "'"
+                << " raw value " << uce.unconverted_values[0] << "}"
+                << " message \"" << uce.what() << "\"";
+            logging::warning(ss.str().c_str()); ss.str("");
+        }
+        var_value = uce.unconverted_values[0];
+    }
+    return var_value;
 }
 
 bool Bmi_Multi_Formulation::is_bmi_input_variable(const std::string &var_name) const {

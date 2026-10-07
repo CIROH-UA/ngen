@@ -14,9 +14,8 @@ target_include_directories(forcing PUBLIC
 
 target_link_libraries(forcing PUBLIC
         NGen::config_header
-        NGen::core
+        NGen::core_mediator
         Boost::boost                # Headers-only Boost
-        NGen::config_header
         Threads::Threads
 )
 
@@ -33,7 +32,5 @@ if(NGEN_WITH_PYTHON)
         "${CMAKE_CURRENT_LIST_DIR}/ForcingsEngineDataProvider.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/ForcingsEngineLumpedDataProvider.cpp"
     )
-    target_link_libraries(forcing PUBLIC pybind11::embed NGen::ngen_bmi)
+    target_link_libraries(forcing PUBLIC NGen::ngen_bmi)
 endif()
-
-#target_compile_options(forcing PUBLIC -std=c++14 -Wall)
