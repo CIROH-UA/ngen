@@ -10,6 +10,9 @@ on:
     branches: [ master, dev, notreal, release-* ]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 env:
   # Obtained from https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners#supported-runners-and-hardware-resources
   # TODO: add something later that can check the runners for hyperthreading
