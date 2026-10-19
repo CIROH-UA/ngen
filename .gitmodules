@@ -52,7 +52,7 @@
 [submodule "extern/summa/summa"]
 	path = extern/summa/summa
 	url = https://github.com/CH-Earth/summa.git
-	branch = develop_sundials
+	branch = develop
 [submodule "extern/dhbv2/dhbv2"]
 	path = extern/dhbv2/dhbv2
 	url = https://github.com/mhpi/dhbv2
