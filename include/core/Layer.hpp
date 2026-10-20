@@ -6,12 +6,17 @@
 #include "LayerData.hpp"
 #include "Simulation_Time.hpp"
 #include "State_Exception.hpp"
+#include "geojson/FeatureBuilder.hpp"
+#include <boost/core/span.hpp>
+#include <memory>
 
-#if NGEN_WITH_MPI
-#include "HY_Features_MPI.hpp"
-#else
-#include "HY_Features.hpp"
-#endif
+namespace hy_features
+{
+    class HY_Features;
+    class HY_Features_MPI;
+}
+
+namespace utils { class CatchmentOutputsMgr; }
 
 namespace ngen
 {
@@ -30,41 +35,46 @@ namespace ngen
                 const LayerDescription& desc, 
                 const std::vector<std::string>& p_u, 
                 const Simulation_Time& s_t, 
-                feature_type& f, 
-                geojson::GeoJSON cd, 
-                long idx) :
+                feature_type& f,
+                geojson::GeoJSON cd,
+                long idx,
+                std::shared_ptr<utils::CatchmentOutputsMgr> cat_output_mgr) :
             description(desc),
             processing_units(p_u),
             simulation_time(s_t),
             features(f),
             catchment_data(cd),
-            output_time_index(idx)
+            output_time_index(idx),
+            catchment_output_mgr(cat_output_mgr)
         {
 
         }
 
         /**
          * @brief Construct a minimum layer object
-         * 
-         * @param desc 
-         * @param s_t 
-         * @param f 
-         * @param idx 
+         *
+         * @param desc
+         * @param s_t
+         * @param f
+         * @param idx
+         * @param cat_output_mgr Catchment output sink for this layer (may be null when output is disabled)
          */
         Layer(
-                const LayerDescription& desc, 
-                const Simulation_Time& s_t, 
+                const LayerDescription& desc,
+                const Simulation_Time& s_t,
                 feature_type& f,
-                long idx) :
+                long idx,
+                std::shared_ptr<utils::CatchmentOutputsMgr> cat_output_mgr) :
             description(desc),
             simulation_time(s_t),
             features(f),
-            output_time_index(idx)
+            output_time_index(idx),
+            catchment_output_mgr(cat_output_mgr)
         {
 
         }
 
-        virtual ~Layer() {}
+        virtual ~Layer();   // out-of-line; see Layer.cpp
 
         /***
          * @brief Return the next timestep that will be processed by this layer in epoch time units
@@ -101,73 +111,11 @@ namespace ngen
         /***
          * @brief Run one simulation timestep for each model in this layer
         */
-        virtual void update_models()
-        {
-            auto idx = simulation_time.next_timestep_index();
-            auto step = simulation_time.get_output_interval_seconds();
-            
-            //std::cout<<"Output Time Index: "<<output_time_index<<std::endl;
-            if(output_time_index%100 == 0) std::cout<<"Running timestep " << output_time_index <<std::endl;
-            std::string current_timestamp = simulation_time.get_timestamp(output_time_index);
-            for(const auto& id : processing_units) 
-            {
-                int sub_time = output_time_index;
-                //std::cout<<"Running cat "<<id<<std::endl;
-                auto r = features.catchment_at(id);
-                //TODO redesign to avoid this cast
-                auto r_c = std::dynamic_pointer_cast<realization::Catchment_Formulation>(r);
-                double response(0.0);
-                try{
-                    response = r_c->get_response(output_time_index, simulation_time.get_output_interval_seconds());
-                }
-                catch(models::external::State_Exception& e){
-                    std::string msg = e.what();
-                    msg = msg+" at timestep "+std::to_string(output_time_index)
-                             +" ("+current_timestamp+")"
-                             +" at feature id "+id;
-                    throw models::external::State_Exception(msg);
-                }
-                std::string output = std::to_string(output_time_index)+","+current_timestamp+","+
-                                    r_c->get_output_line_for_timestep(output_time_index)+"\n";
-                r_c->write_output(output);
-                //TODO put this somewhere else.  For now, just trying to ensure we get m^3/s into nexus output
-                double area;
-                try{
-                    area = catchment_data->get_feature(id)->get_property("areasqkm").as_real_number();
-                }
-                catch(std::invalid_argument &e)
-                {
-                    area = catchment_data->get_feature(id)->get_property("area_sqkm").as_real_number();
-                }
-                double response_m_s = response * (area * 1000000);
-                //TODO put this somewhere else as well, for now, an implicit assumption is that a module's get_response returns
-                //m/timestep
-                //since we are operating on a 1 hour (3600s) dt, we need to scale the output appropriately
-                //so no response is m^2/hr...m^2/hr * 1hr/3600s = m^3/hr
-                double response_m_h = response_m_s / 3600.0;
-                //update the nexus with this flow
-                for(auto& nexus : features.destination_nexuses(id)) {
-                    //TODO in a DENDRITIC network, only one destination nexus per catchment
-                    //If there is more than one, some form of catchment partitioning will be required.
-                    //for now, only contribute to the first one in the list
-                    if(nexus == nullptr){
-                        throw std::runtime_error("Invalid (null) nexus instantiation downstream of "+id+". "+SOURCE_LOC);
-                    }
-                    nexus->add_upstream_flow(response_m_h, id, output_time_index);
-                    /*std::cerr << "Add water to nexus ID = " << nexus->get_id() << " from catchment ID = " << id << " value = "
-                              << response << ", ID = " << id << ", time-index = " << output_time_index << std::endl; */
-                    break;
-                }
-                
-            } //done catchments   
-
-            ++output_time_index;
-            if ( output_time_index < simulation_time.get_total_output_times() )
-            {
-                simulation_time.advance_timestep();
-            }       
-        }
-        
+        virtual void update_models(boost::span<double> catchment_outflows, 
+                                   std::unordered_map<std::string, int> const& catchment_indexes,
+                                   boost::span<double> nexus_downstream_flows,
+                                   std::unordered_map<std::string, int> const& nexus_indexes,
+                                   int current_step);
 
         protected:
 
@@ -179,7 +127,9 @@ namespace ngen
         feature_type& features;
         //TODO is this really required at the top level? or can this be moved to SurfaceLayer?
         const geojson::GeoJSON catchment_data;
-        long output_time_index;       
+        long output_time_index;
+        //! Catchment output sink for this layer's per-timestep push; null when output is disabled.
+        std::shared_ptr<utils::CatchmentOutputsMgr> catchment_output_mgr = nullptr;
 
     };
 }

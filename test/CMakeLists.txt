@@ -35,6 +35,10 @@ if(NGEN_WITH_MPI)
     add_compile_definitions(NGEN_MPI_TESTS_ACTIVE)
 endif()
 
+if(NGEN_WITH_NETCDF)
+    add_compile_definitions(NGEN_NETCDF_TESTS_ACTIVE)
+endif()
+
 if(NGEN_WITH_BMI_C)
     add_compile_definitions(NGEN_BMI_C_LIB_TESTS_ACTIVE)
     add_external_subdirectory(
@@ -62,7 +66,7 @@ endif()
 add_executable(test_all)
 target_link_libraries(test_all PRIVATE gtest gtest_main)
 set_target_properties(test_all PROPERTIES FOLDER test)
-target_include_directories(test_all PRIVATE ${CMAKE_CURRENT_LIST_DIR}/bmi)
+target_include_directories(test_all PRIVATE ${CMAKE_CURRENT_LIST_DIR}/bmi ${NGEN_ROOT_DIR}/include)
 
 # =============================================================================
 
@@ -106,6 +110,7 @@ function(ngen_add_test TESTNAME)
 
     if(NGEN_TEST_CREATE)
         add_executable(${TESTNAME} ${NGEN_TEST_OBJECTS})
+        target_include_directories(${TESTNAME} PRIVATE ${NGEN_ROOT_DIR}/include)
         target_include_directories(${TESTNAME} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/bmi)
         target_link_libraries(${TESTNAME} PRIVATE gtest gtest_main ${NGEN_TEST_LIBRARIES})
         set_target_properties(${TESTNAME} PROPERTIES FOLDER test)
@@ -164,12 +169,15 @@ ngen_add_test(
     test_realization_config
     OBJECTS
         realizations/Formulation_Manager_Test.cpp
+        realizations/config/Output_Test.cpp
+        realizations/config/CatchmentOutput_Test.cpp
     LIBRARIES
         NGen::core
         NGen::realizations_catchment
         NGen::core_mediator
         NGen::forcing
         NGen::ngen_bmi
+        NGen::output
     DEPENDS
         testbmicppmodel
 )
@@ -205,20 +213,24 @@ if(TARGET test_forcings_engine)
     # Use global add instead of target add so that both `test_forcings_engine` and `test_all`
     # receive this compile definition.
     add_compile_definitions(NGEN_LUMPED_CONFIG_PATH="${CMAKE_CURRENT_BINARY_DIR}/config_aorc.yml")
+
+    if(NGEN_WITH_MPI)
+        target_link_libraries(test_forcings_engine PRIVATE MPI::MPI_CXX)
+    endif()
 endif()
 
-########################## Series Unit Tests
+########################## BMI Protocol Unit Tests
+
 ngen_add_test(
-    test_mdarray
+    test_bmi_protocols
     OBJECTS
-        utils/mdarray_Test.cpp
-        utils/mdframe_Test.cpp
-        utils/mdframe_netcdf_Test.cpp
-        utils/mdframe_csv_Test.cpp
+        utils/bmi/mass_balance_Test.cpp
     LIBRARIES
-        NGen::mdarray
-        NGen::mdframe
-        
+        NGen::bmi_protocols
+        NGen::ngen_bmi
+        gmock
+    DEPENDS
+        testbmicppmodel
 )
 
 ########################## Logging Unit Tests
@@ -240,6 +252,24 @@ ngen_add_test(
         NGen::core_nexus
 )
 
+########################## Nexus CSV Output Manager Tests
+ngen_add_test(
+    test_nexus_output
+    OBJECTS
+        utilities/output/PerNexusCsvOutputMgr_Test.cpp
+    LIBRARIES
+        NGen::output
+)
+
+########################## Catchment CSV Output Manager Tests
+ngen_add_test(
+    test_catchment_output_mgr
+    OBJECTS
+        utilities/output/CatchmentCsvOutputMgr_Test.cpp
+    LIBRARIES
+        NGen::output
+)
+
 ########################## MPI Remote Nexus Tests
 ngen_add_test(
     test_remote_nexus
@@ -250,6 +280,40 @@ ngen_add_test(
     REQUIRES
         NGEN_WITH_MPI
 )
+
+########################## Specialized MPI Tests
+if (NGEN_WITH_MPI)
+    find_package(MPI REQUIRED)
+    add_executable(test_mpi_unit
+            gtest_mpi_main.cpp                          # Special test main() for use with MPI
+            utils/PerFormulationNexusOutputMgr_Test.cpp # Involved test files
+    )
+    # TODO: this might need more
+
+    target_include_directories(test_mpi_unit PUBLIC include/utils)
+    target_link_libraries(test_mpi_unit PUBLIC gtest NGen::core NGen::core_nexus NGen::output NetCDF MPI::MPI_CXX)
+    target_compile_definitions(test_mpi_unit PUBLIC NGEN_WITH_MPI NGEN_MPI_UNIT_TESTS)
+
+    #set_target_properties(test_mpi_unit PROPERTIES CROSSCOMPILING_EMULATOR '${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2')
+    set_target_properties(test_mpi_unit PROPERTIES
+            CROSSCOMPILING_EMULATOR "mpirun -np 2"
+            FOLDER test
+    )
+    #gtest_discover_tests(test_mpi_unit)
+
+
+    #set(TEST_MPI_CMD "mpirun" "-np" "2" "test_mpi_unit")
+    #set_target_properties(test_mpi_unit PROPERTIES
+    #        FOLDER test
+    #        VS_DEBUGGER_WORKING_DIRECTORY "${PROJECT_BINARY_DIR}"
+    #)
+    #add_test(
+    #        test_mpi_unit
+    #        COMMAND ${TEST_MPI_CMD}
+    #        #WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    #)
+endif ()
+
 
 ########################## Partitioning Tests
 ngen_add_test(
@@ -302,6 +366,7 @@ ngen_add_test(
         bmi/Bmi_Cpp_Adapter_Test.cpp
         realizations/catchments/Bmi_Cpp_Formulation_Test.cpp
     LIBRARIES
+        gmock
         NGen::core
         NGen::realizations_catchment
         NGen::core_mediator
@@ -337,6 +402,7 @@ ngen_add_test(
         bmi/Bmi_Fortran_Adapter_Test.cpp
         realizations/catchments/Bmi_Fortran_Formulation_Test.cpp
     LIBRARIES
+        gmock
         NGen::core
         NGen::realizations_catchment
         NGen::core_mediator
@@ -354,7 +420,9 @@ ngen_add_test(
     OBJECTS
         bmi/Bmi_Py_Adapter_Test.cpp
         realizations/catchments/Bmi_Py_Formulation_Test.cpp
+        utils/python/InterpreterUtil_Test.cpp
     LIBRARIES
+        gmock
         NGen::core
         NGen::realizations_catchment
         NGen::core_mediator
@@ -371,6 +439,7 @@ ngen_add_test(
         realizations/catchments/Bmi_Multi_Formulation_Test.cpp
         realizations/catchments/Bmi_Cpp_Multi_Array_Test.cpp
     LIBRARIES
+        gmock
         NGen::core
         NGen::realizations_catchment
         NGen::core_mediator
@@ -404,6 +473,7 @@ ngen_add_test(
         NGen::core_mediator
         NGen::forcing
         NGen::ngen_bmi
+        NGen::output
     REQUIRES
         NGEN_WITH_BMI_C
         NGEN_WITH_BMI_FORTRAN
@@ -449,18 +519,26 @@ ngen_add_test(
         NGen::geojson
 )
 
+########################## NgenSimulation Class Tests
+ngen_add_test(
+    test_ngen_simulation
+    OBJECTS
+        core/NgenSimulationTests.cpp
+    LIBRARIES
+        NGen::core
+        NGen::geojson
+        NGen::logging
+        NGen::core_mediator
+        NGen::ngen_bmi
+)
+
 ########################### Netcdf Forcing Tests
 ngen_add_test(
     test_netcdf_forcing
     OBJECTS
         forcing/NetCDFPerFeatureDataProvider_Test.cpp
     LIBRARIES
-        NGen::core
-        NGen::core_nexus
-        NGen::core_mediator
         NGen::forcing
-        NGen::geojson
-        NGen::realizations_catchment
     REQUIRES
         NGEN_WITH_NETCDF
 )
@@ -482,11 +560,8 @@ ngen_add_test(
         core/NetworkTests.cpp
         utils/include/StreamOutputTest.cpp
         realizations/Formulation_Manager_Test.cpp
+        utils/PerFormulationNexusOutputMgr_Test.cpp
         utils/Partition_Test.cpp
-        utils/mdarray_Test.cpp
-        utils/mdframe_Test.cpp
-        utils/mdframe_netcdf_Test.cpp
-        utils/mdframe_csv_Test.cpp
         utils/logging_Test.cpp
     LIBRARIES
         gmock
@@ -496,10 +571,9 @@ ngen_add_test(
         NGen::forcing
         NGen::geojson
         NGen::realizations_catchment
-        NGen::mdarray
-        NGen::mdframe
         NGen::logging
         NGen::ngen_bmi
+        NGen::output
         testbmicppmodel
 )
 

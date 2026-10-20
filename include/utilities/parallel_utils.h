@@ -20,14 +20,9 @@
 #define NGEN_MPI_PROTOCOL_TAG 101
 #endif
 
-#include <cstring>
 #include <mpi.h>
 #include <string>
-#include <set>
 #include <vector>
-#if NGEN_WITH_PYTHON
-#include "python/HydrofabricSubsetter.hpp"
-#endif // NGEN_WITH_PYTHON
 
 namespace parallel {
 
@@ -44,56 +39,22 @@ namespace parallel {
      * Finally, the value indicated by this global status is returned.
      *
      * @param status The initial individual state for the current MPI rank.
-     * @param mpi_rank The rank of the current process.
-     * @param mpi_num_procs The total number of MPI processes.
+     * @param comm The MPI communicator across whose ranks to synchronize the status.
      * @param taskDesc A description of the related task, used by rank 0 to print a message when included for any rank that
      *                 is not in the success/ready state.
      * @return Whether all ranks coordinating status had a success/ready status value.
      */
-    bool mpiSyncStatusAnd(bool status, int mpi_rank, int mpi_num_procs, const std::string &taskDesc) {
-        
-        // Expect 0 is good and 1 is no good for goodCode
-        // TODO: assert this in constructor or somewhere, or maybe just in a unit test
-        unsigned short codeBuffer;
-        bool printMessage = !taskDesc.empty();
-        // For the other ranks, start by properly setting the status code value in the buffer and send to rank 0
-        if (mpi_rank != 0) {
-            codeBuffer = status ? MPI_HF_SUB_CODE_GOOD : MPI_HF_SUB_CODE_BAD;
-            MPI_Send(&codeBuffer, 1, MPI_UNSIGNED_SHORT, 0, 0, MPI_COMM_WORLD);
-        }
-        // In rank 0, the first step is to receive and process codes from the other ranks into unified global status
-        else {
-            for (int i = 1; i < mpi_num_procs; ++i) {
-                MPI_Recv(&codeBuffer, 1, MPI_UNSIGNED_SHORT, i, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                // If any is ever "not good", overwrite status to be "false"
-                if (codeBuffer != MPI_HF_SUB_CODE_GOOD) {
-                    if (printMessage) {
-                        std::cout << "Rank " << i << " not successful/ready after " << taskDesc << std::endl;
-                    }
-                    status = false;
-                }
-            }
-            // Rank 0 must also now prepare the codeBuffer value for broadcasting the global status
-            codeBuffer = status ? MPI_HF_SUB_CODE_GOOD : MPI_HF_SUB_CODE_BAD;
-        }
-
-        // Execute broadcast of global status rooted at rank 0
-        MPI_Bcast(&codeBuffer, 1, MPI_UNSIGNED_SHORT, 0, MPI_COMM_WORLD);
-        return codeBuffer == MPI_HF_SUB_CODE_GOOD;
-    }
+    bool mpiSyncStatusAnd(bool status, MPI_Comm comm, const std::string &taskDesc);
 
     /**
      * Convenience method for overloaded function when no message is needed, and thus no description param provided.
      *
      * @param status The initial individual state for the current MPI rank.
-     * @param mpi_rank The rank of the current process.
-     * @param mpi_num_procs The total number of MPI processes.
+     * @param comm The MPI communicator across whose ranks to synchronize the status.
      * @return Whether all ranks coordinating status had a success/ready status value.
      * @see mpiSyncStatusAnd(bool, const std::string&)
      */
-    bool mpiSyncStatusAnd(bool status, int mpi_rank, int mpi_num_procs) {
-        return mpiSyncStatusAnd(status, mpi_rank, mpi_num_procs, "");
-    }
+    bool mpiSyncStatusAnd(bool status, MPI_Comm comm);
 
     /**
      * Check whether the parameter hydrofabric files have been subdivided into appropriate per partition files.
@@ -102,45 +63,17 @@ namespace parallel {
      * ``/dirname/catchment_data.geojson`` and two MPI processes, checks if both ``/dirname/catchment_data.geojson.0``
      * and ``/dirname/catchment_data.geojson.1 `` exist.
      *
-     * This check is performed for both the catchment and nexus hydrofabric base file names, as stored in the global
-     * ``catchmentDataFile`` and ``nexusDataFile`` variables respectively.  The number of MPI processes is obtained from
-     * the global ``mpi_rank`` variable.
+     * This check is performed for the catchment hydrofabric base file name given by ``catchmentDataFile``.  The number
+     * of MPI processes is obtained from the passed communicator ``comm``.
      *
-     * @param mpi_rank The rank of the current process.
-     * @param mpi_num_procs The total number of MPI processes.
+     * @param catchmentDataFile The path to the catchment data file for the hydrofabric.
+     * @param comm The MPI communicator across whose ranks the hydrofabric is shared.
      * @param printMessage Whether a supplemental message should be printed to standard out indicating status.
      *
      * @return Whether proprocessing has already been performed to divide the main hydrofabric into existing, individual
      *         sub-hydrofabric files for each partition/process.
      */
-    bool is_hydrofabric_subdivided(int mpi_rank, int mpi_num_procs, bool printMsg) {
-        std::string name = catchmentDataFile + "." + std::to_string(mpi_rank);
-        // Initialize isGood based on local state.  Here, local file is "good" when it already exists.
-        // TODO: this isn't actually checking whether the files are right (just that they are present) so do we need to?
-        bool isGood = utils::FileChecker::file_is_readable(name);
-
-        if (mpiSyncStatusAnd(isGood, mpi_rank, mpi_num_procs)) {
-            if (printMsg) { std::cout << "Process " << mpi_rank << ": Hydrofabric already subdivided in " << mpi_num_procs << " files." << std::endl; }
-            return true;
-        }
-        else {
-            if (printMsg) { std::cout << "Process " << mpi_rank << ": Hydrofabric has not yet been subdivided." << std::endl; }
-            return false;
-        }
-    }
-
-    /**
-     * Convenience overloaded method for when no supplemental output message is required.
-     *
-     * @param mpi_rank The rank of the current process.
-     * @param mpi_num_procs The total number of MPI processes.
-     * @return Whether proprocessing has already been performed to divide the main hydrofabric into existing, individual
-     *         sub-hydrofabric files for each partition/process.
-     * @see is_hydrofabric_subdivided(bool)
-     */
-    bool is_hydrofabric_subdivided(int mpi_rank, int mpi_num_procs) {
-        return is_hydrofabric_subdivided(mpi_rank, mpi_num_procs, false);
-    }
+    bool is_hydrofabric_subdivided(const std::string &catchmentDataFile, MPI_Comm comm, bool printMsg);
 
     /**
      * Set each rank's host "id" value in a provided host array.
@@ -153,82 +86,10 @@ namespace parallel {
      * This array is then broadcast by rank 0 back to to the other ranks, allowing them to set their analogous arrays.
      * It is expected all ranks run this function at the same time.
      *
-     * @param mpi_rank The current rank.
-     * @param mpi_num_procs The number of ranks.
-     * @param host_array A pointer to an allocated array of size ``mpi_num_procs``.
+     * @param comm The MPI communicator whose ranks' hosts are to be identified.
+     * @param host_array A pointer to an allocated array of size equal to the number of ranks in ``comm``.
      */
-    void get_hosts_array(int mpi_rank, int mpi_num_procs, int *host_array) {
-        const int ROOT_RANK = 0;
-        // These are the lengths of the (trimmed) C-string representations of the hostname for each rank
-        std::vector<int> actualHostnameCStrLength(mpi_num_procs);
-        // Initialize to -1 to represent unknown
-        for (int i = 0; i < mpi_num_procs; ++i) {
-            actualHostnameCStrLength[i] = -1;
-        }
-
-        // Get this rank's hostname (things should never be longer than 256)
-        char myhostname[256];
-        gethostname(myhostname, 256);
-
-        // Set the one for this rank
-        actualHostnameCStrLength[mpi_rank] = std::strlen(myhostname);
-
-        // First, gather the hostname string lengths
-        MPI_Gather(&actualHostnameCStrLength[mpi_rank], 1, MPI_INT, actualHostnameCStrLength.data(), 1, MPI_INT, ROOT_RANK,
-                   MPI_COMM_WORLD);
-        // Per-rank start offsets/displacements in our hostname strings gather buffer.
-        std::vector<int> recvDisplacements(mpi_num_procs);
-        int totalLength = 0;
-        for (int i = 0; i < mpi_num_procs; ++i) {
-            // Displace each rank's string by the sum of the length of the previous rank strings
-            recvDisplacements[i] = totalLength;
-            // Adding the extra to make space for the \0
-            actualHostnameCStrLength[i] += 1;
-            // Then update the total length
-            totalLength += actualHostnameCStrLength[i];
-
-        }
-        // Now we can create our buffer array and gather the hostname strings into it
-        char hostnames[totalLength];
-        MPI_Gatherv(myhostname, actualHostnameCStrLength[mpi_rank], MPI_CHAR, hostnames, actualHostnameCStrLength.data(),
-                    recvDisplacements.data(), MPI_CHAR, ROOT_RANK, MPI_COMM_WORLD);
-
-        if (mpi_rank == ROOT_RANK) {
-            host_array[0] = 0;
-            int next_host_id = 1;
-
-            int rank_with_matching_hostname;
-            char *checked_rank_hostname, *known_rank_hostname;
-
-            for (int rank_being_check = 0; rank_being_check < mpi_num_procs; ++rank_being_check) {
-                // Set this as negative initially for each rank check to indicate no match found (at least yet)
-                rank_with_matching_hostname = -1;
-                // Get a C-string pointer for this rank's hostname, offset by the appropriate displacement
-                checked_rank_hostname = &hostnames[recvDisplacements[rank_being_check]];
-
-                // Assume that hostnames for any ranks less than the current rank being check are already known
-                for (int known_rank = 0; known_rank < rank_being_check; ++known_rank) {
-                    // Get the right C-string pointer for the current known rank's hostname also
-                    known_rank_hostname = &hostnames[recvDisplacements[known_rank]];
-                    // Compare the hostnames, setting and breaking if a match is found
-                    if (std::strcmp(known_rank_hostname, checked_rank_hostname) == 0) {
-                        rank_with_matching_hostname = known_rank;
-                        break;
-                    }
-                }
-                // This indicates this rank had no earlier rank with a matching hostname.
-                if (rank_with_matching_hostname < 0) {
-                    // Assign new host id, then increment what the next id will be
-                    host_array[rank_being_check] = next_host_id++;
-                }
-                else {
-                    host_array[rank_being_check] = host_array[rank_with_matching_hostname];
-                }
-            }
-        }
-        // Now, broadcast the results out
-        MPI_Bcast(host_array, mpi_num_procs, MPI_INT, 0, MPI_COMM_WORLD);
-    }
+    void get_hosts_array(MPI_Comm comm, int *host_array);
 
     /**
      * Send the contents of a text file to another MPI rank.
@@ -236,62 +97,11 @@ namespace parallel {
      * Note that the file is read with ``fgets``.
      *
      * @param fileName The text file to read and send its contents.
-     * @param mpi_rank The current MPI rank.
+     * @param comm The MPI communicator over which the file data should be sent.
      * @param destRank The MPI rank to which the file data should be sent.
      * @return Whether sending was successful.
      */
-    bool mpi_send_text_file(const char *fileName, const int mpi_rank, const int destRank) {
-        int bufSize = 4096;
-        std::vector<char> buf(bufSize);
-        int code;
-        // How much has been transferred so far
-        int totalNumTransferred = 0;
-
-        FILE *file = fopen(fileName, "r");
-
-        // Transmit error code instead of expected size and return false if file can't be opened
-        if (file == NULL) {
-            // TODO: output error message
-            code = -1;
-            MPI_Send(&code, 1, MPI_INT, destRank, NGEN_MPI_PROTOCOL_TAG, MPI_COMM_WORLD);
-            return false;
-        }
-
-        // Send expected size to start
-        MPI_Send(&bufSize, 1, MPI_INT, destRank, NGEN_MPI_PROTOCOL_TAG, MPI_COMM_WORLD);
-
-        // Then get back expected size to infer other side is good to go
-        MPI_Recv(&code, 1, MPI_INT, destRank, NGEN_MPI_PROTOCOL_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        if (code != bufSize) {
-            // TODO: output error message
-            fclose(file);
-            return false;
-        }
-        int continueCode = 1;
-        // Then while there is more of the file to read and send, read the next batch and ...
-        while (fgets(buf.data(), bufSize, file) != NULL) {
-            // Indicate we are ready to continue sending data
-            MPI_Send(&continueCode, 1, MPI_INT, destRank, NGEN_MPI_PROTOCOL_TAG, MPI_COMM_WORLD);
-
-            // Send this batch
-            MPI_Send(buf.data(), bufSize, MPI_CHAR, destRank, NGEN_MPI_DATA_TAG, MPI_COMM_WORLD);
-
-            // Then get back a code, which will be -1 if bad and need to exit and otherwise good
-            MPI_Recv(&code, 1, MPI_INT, destRank, NGEN_MPI_PROTOCOL_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-            if (code < 0) {
-                // TODO: output error message
-                fclose(file);
-                return false;
-            }
-        }
-        // Once there is no more file to read and send, we should stop continuing
-        continueCode = 0;
-        MPI_Send(&continueCode, 1, MPI_INT, destRank, NGEN_MPI_PROTOCOL_TAG, MPI_COMM_WORLD);
-        // Expect to get back a code of 0
-        MPI_Recv(&code, 1, MPI_INT, destRank, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        fclose(file);
-        return code == 0;
-    }
+    bool mpi_send_text_file(const char *fileName, MPI_Comm comm, const int destRank);
 
     /**
      * Receive text data from another MPI rank and write the contents to a text file.
@@ -301,62 +111,11 @@ namespace parallel {
      * Note that the file is written with ``fputs``.
      *
      * @param fileName The text file to which data should be written.
-     * @param mpi_rank The current MPI rank.
-     * @param destRank The MPI rank to which the file data should be sent.
-     * @return Whether sending was successful.
+     * @param comm The MPI communicator over which the file data should be received.
+     * @param srcRank The MPI rank from which the file data should be received.
+     * @return Whether receiving was successful.
      */
-    bool mpi_recv_text_file(const char *fileName, const int mpi_rank, const int srcRank) {
-        int bufSize, writeCode;
-        // Receive expected buffer size to start
-        MPI_Recv(&bufSize, 1, MPI_INT, srcRank, NGEN_MPI_PROTOCOL_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-
-        // If the sending side couldn't open the file, then immediately return false
-        if (bufSize == -1) {
-            // TODO: output error
-            return false;
-        }
-
-        // Try to open recv file ...
-        FILE *file = fopen(fileName, "w");
-        // ... and let sending size know whether this was successful by sending error code if not ...
-        if (file == NULL) {
-            // TODO: output error message
-            bufSize = -1;
-            MPI_Send(&bufSize, 1, MPI_INT, srcRank, NGEN_MPI_PROTOCOL_TAG, MPI_COMM_WORLD);
-            return false;
-        }
-
-        // Send back the received buffer it if file opened, confirming things are good to go for transfer
-        MPI_Send(&bufSize, 1, MPI_INT, srcRank, NGEN_MPI_PROTOCOL_TAG, MPI_COMM_WORLD);
-
-        // How much has been transferred so far
-        int totalNumTransferred = 0;
-        std::vector<char> buf(bufSize);
-
-        int continueCode;
-
-        while (true) {
-            // Make sure the other side wants to continue sending data
-            MPI_Recv(&continueCode, 1, MPI_INT, srcRank, NGEN_MPI_PROTOCOL_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-            if (continueCode <= 0)
-                break;
-
-            MPI_Recv(buf.data(), bufSize, MPI_CHAR, srcRank, NGEN_MPI_DATA_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-
-            writeCode = fputs(buf.data(), file);
-            MPI_Send(&writeCode, 1, MPI_INT, srcRank, NGEN_MPI_PROTOCOL_TAG, MPI_COMM_WORLD);
-
-            if (writeCode < 0) {
-                fclose(file);
-                return false;
-            }
-        }
-
-        fclose(file);
-        MPI_Send(&continueCode, 1, MPI_INT, srcRank, NGEN_MPI_PROTOCOL_TAG, MPI_COMM_WORLD);
-        return true;
-    }
-
+    bool mpi_recv_text_file(const char *fileName, MPI_Comm comm, const int srcRank);
 
     /**
      * Distribute subdivided hydrofabric files to ranks on other hosts as needed.
@@ -398,9 +157,8 @@ namespace parallel {
      * @param baseCatchmentFile The base catchment data file from which the rank-specific files are derived.
      * @param baseNexusFile The base nexus data file from which the rank-specific files are derived.
      * @param sendingRank The rank that will be the source and send data to ranks on different hosts.
-     * @param mpi_rank The rank of the current process.
-     * @param mpi_num_procs The number of MPI ranks.
-     * @param hostIdForRank Pointer to array of size ``mpi_num_procs`` that maps ranks (index) to hosts, with each
+     * @param comm The MPI communicator over whose ranks files are distributed.
+     * @param hostIdForRank Pointer to array of size equal to the number of ranks in ``comm`` that maps ranks (index) to hosts, with each
      *                      distinct host having some identifier value uniquely representing it within the array
      *                      (e.g., if hostIdForRank[0] == hostIdForRank[1] then rank 0 and rank 1 are on the same host).
      * @param syncReturnStatus Whether all ranks should AND-sync their return status before returning.
@@ -408,52 +166,8 @@ namespace parallel {
      * @return
      */
     bool distribute_subdivided_hydrofabric_files(const std::string &baseCatchmentFile, const std::string &baseNexusFile,
-                                                 const int sendingRank, const int mpi_rank, const int mpi_num_procs,
-                                                 const int *hostIdForRank, bool syncReturnStatus, bool blockAll)
-    {
-        // Start with status as good
-        bool isGood = true;
-        // FIXME: For now, just have rank 0 send everything, but optimize with multiple procs or threads later
-        // Only need to process this if sending rank or a receiving ranks (i.e., not on same host as sending rank)
-        if (mpi_rank == sendingRank || hostIdForRank[mpi_rank] != hostIdForRank[sendingRank]) {
-            // Have the sending rank send out all files
-            if (mpi_rank == sendingRank) {
-                // In rank 0, for all the other ranks ...
-                for (int otherRank = 0; otherRank < mpi_num_procs; ++otherRank) {
-                    // If another rank is on a different host (note that this covers otherRank == sendingRank case) ...
-                    if (hostIdForRank[otherRank] != hostIdForRank[mpi_rank]) {
-                        // ... then send that rank its rank-specific catchment and nexus files
-                        std::string catFileToSend = baseCatchmentFile + "." + std::to_string(otherRank);
-                        std::string nexFileToSend = baseNexusFile + "." + std::to_string(otherRank);
-                        // Note that checking previous isGood is necessary here because of loop
-                        isGood = isGood && mpi_send_text_file(catFileToSend.c_str(), mpi_rank, otherRank);
-                        isGood = isGood && mpi_send_text_file(nexFileToSend.c_str(), mpi_rank, otherRank);
-                    }
-                }
-            }
-            else {
-                // For a rank not on the same host as the sending rank, receive the transmitted file
-                std::string catFileToReceive = baseCatchmentFile + "." + std::to_string(mpi_rank);
-                std::string nexFileToReceive = baseNexusFile + "." + std::to_string(mpi_rank);
-                // Note that, unlike a bit earlier, don't need to check prior isGood in 1st receive, because not in loop
-                isGood = mpi_recv_text_file(catFileToReceive.c_str(), mpi_rank, sendingRank);
-                isGood = isGood && mpi_recv_text_file(nexFileToReceive.c_str(), mpi_rank, sendingRank);
-            }
-        }
-
-        // Wait when appropriate
-        if (blockAll) { MPI_Barrier(MPI_COMM_WORLD); }
-
-        // Sync status among the ranks also, if appropriate
-        if (syncReturnStatus) {
-            return mpiSyncStatusAnd(isGood, mpi_rank, mpi_num_procs, "distributing subdivided hydrofabric files");
-        }
-        // Otherwise, just return the local status value
-        else {
-            return isGood;
-        }
-    }
-
+                                                 const int sendingRank, MPI_Comm comm,
+                                                 const int *hostIdForRank, bool syncReturnStatus, bool blockAll);
 
     /**
      * Attempt to subdivide the passed hydrofabric files into a series of per-partition files.
@@ -462,78 +176,32 @@ namespace parallel {
      * and associated files.  As a result, if there are any other subdivided hydrofabric files present having the same
      * names as the files the function will write, then those preexisting files are considered stale and overwritten.
      *
-     * @param mpi_rank The rank of the current process.
-     * @param mpi_num_procs The total number of MPI processes.
+     * @param comm The MPI communicator across whose ranks the hydrofabric is subdivided.
      * @param catchmentDataFile The path to the catchment data file for the hydrofabric.
      * @param nexusDataFile The path to the nexus data file for the hydrofabric.
      * @param partitionConfigFile The path to distributed processing hydrofabric partitioning config.
      * @return Whether subdividing was successful.
      */
-    bool subdivide_hydrofabric(int mpi_rank, int mpi_num_procs, const std::string &catchmentDataFile,
-                               const std::string &nexusDataFile, const std::string &partitionConfigFile)
-    {
-        // Track whether things are good, meaning ok to continue and, at the end, whether successful
-        // Start with a value of true
-        bool isGood = true;
+    bool subdivide_hydrofabric(MPI_Comm comm, const std::string &catchmentDataFile,
+                               const std::string &nexusDataFile, const std::string &partitionConfigFile);
 
-        #if !NGEN_WITH_PYTHON
-        // We can't be good to proceed with this, because Python is not active
-        isGood = false;
-        std::cerr << "Driver is unable to perform required hydrofabric subdividing when Python integration is not active." << std::endl;
+    /**
+     * MPI_Gather vector<string> values from all processes. The result may include duplicate values.
+     * 
+     * @param local_strings Vector of strings from the current process
+     * @param comm The MPI communicator over which to gather
+     * @return A vector of the gathered strings from all processes. This will only be populated on the root rank (rank 0)
+     */
+    std::vector<std::string> gather_strings(const std::vector<std::string>& local_strings, MPI_Comm comm);
 
-
-        // Sync with the rest of the ranks and bail if any aren't ready to proceed for any reason
-        if (!mpiSyncStatusAnd(isGood, mpi_rank, mpi_num_procs, "initializing hydrofabric subdivider")) {
-            return false;
-        }
-        #else // i.e., #if NGEN_WITH_PYTHON
-        // Have rank 0 handle the generation task for all files/partitions
-        std::unique_ptr<utils::ngenPy::HydrofabricSubsetter> subdivider;
-        // Have rank 0 handle the generation task for all files/partitions
-        if (mpi_rank == 0) {
-            try {
-                subdivider = std::make_unique<utils::ngenPy::HydrofabricSubsetter>(catchmentDataFile, nexusDataFile,
-                                                                                   partitionConfigFile);
-            }
-            catch (const std::exception &e) {
-                std::cerr << e.what() << std::endl;
-                // Set not good if the subdivider object couldn't be instantiated
-                isGood = false;
-            }
-        }
-        // Sync ranks and bail if any aren't ready to proceed for any reason
-        if (!mpiSyncStatusAnd(isGood, mpi_rank, mpi_num_procs, "initializing hydrofabric subdivider")) {
-            return false;
-        }
-
-        if (mpi_rank == 0) {
-            // Try to perform the subdividing
-            try {
-                isGood = subdivider->execSubdivision();
-            }
-            catch (const std::exception &e) {
-                std::cerr << e.what() << std::endl;
-                // Set not good if the subdivider object couldn't be instantiated
-                isGood = false;
-            }
-        }
-        // Sync ranks again here on whether subdividing was successful, having them all exit at this point if not
-        if (!mpiSyncStatusAnd(isGood, mpi_rank, mpi_num_procs, "executing hydrofabric subdivision")) {
-            return false;
-        }
-        // But if the subdividing went fine ...
-        else {
-            // ... figure out what ranks are on hosts with each other by getting an id for host of each rank
-            std::vector<int> hostIdForRank(mpi_num_procs);
-            get_hosts_array(mpi_rank, mpi_num_procs, hostIdForRank.data());
-
-            // ... then (when necessary) transferring files around
-            return distribute_subdivided_hydrofabric_files(catchmentDataFile, nexusDataFile, 0, mpi_rank,
-                                                           mpi_num_procs, hostIdForRank.data(), true, true);
-
-        }
-        #endif // NGEN_WITH_PYTHON
-    }
+    /**
+     * Send a vector<string> from root to all other processes.
+     * 
+     * @param strings If on the root rank (rank 0), the strings that will be broadcasted. Unused for other processes.
+     * @param comm The MPI communicator over which to broadcast
+     * @return vector<string> of the broadcasted strings from the root rank (rank 0)
+     */
+    std::vector<std::string> broadcast_strings(const std::vector<std::string>& strings, MPI_Comm comm);
 }
 
 #endif // NGEN_WITH_MPI

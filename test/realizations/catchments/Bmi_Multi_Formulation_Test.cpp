@@ -12,6 +12,7 @@
 #include <map>
 #include <vector>
 #include "gtest/gtest.h"
+#include "gmock/gmock.h"
 #include "Bmi_Multi_Formulation.hpp"
 #include "Bmi_Module_Formulation.hpp"
 #include "Bmi_Fortran_Formulation.hpp"
@@ -349,7 +350,7 @@ private:
         return s;
     }
 
-    inline void buildExampleConfig(const int ex_index) {
+    inline void buildExampleConfig(const int ex_index, const int nested_count) {
         std::string config =
                 "{\n"
                 "    \"global\": {},\n"
@@ -364,10 +365,12 @@ private:
                 "                        \"init_config\": \"\",\n"
                 "                        \"allow_exceed_end_time\": true,\n"
                 "                        \"main_output_variable\": \"" + main_output_variables[ex_index] + "\",\n"
-                "                        \"modules\": [\n"
-                + buildExampleNestedModuleSubConfig(ex_index, 0) + ",\n"
-                + buildExampleNestedModuleSubConfig(ex_index, 1) + "\n"
-                "                        ],\n"
+                "                        \"modules\": [\n";
+        for (int i = 0; i < nested_count - 1; ++i) {
+            config += buildExampleNestedModuleSubConfig(ex_index, i) + ",\n";
+        }
+        config += buildExampleNestedModuleSubConfig(ex_index, nested_count - 1) + "\n";
+        config += "                        ],\n"
                 "                        \"uses_forcing_file\": false\n"
                 + buildExampleOutputVariablesSubConfig(ex_index) + "\n"
                 "                    }\n"
@@ -423,7 +426,7 @@ private:
         main_output_variables[ex_index] = nested_module_main_output_variables[ex_index][example_module_depth[ex_index] - 1];
         specified_output_variables[ex_index] = output_variables;
 
-        buildExampleConfig(ex_index);
+        buildExampleConfig(ex_index, nested_module_lists[ex_index].size());
     }
 
 
@@ -451,7 +454,7 @@ void Bmi_Multi_Formulation_Test::SetUp() {
 
     // Define this manually to set how many nested modules per example, and implicitly how many examples.
     // This means example_module_depth.size() example scenarios with example_module_depth[i] nested modules in each scenario.
-    example_module_depth = {2, 2, 2, 2, 2, 2};
+    example_module_depth = {2, 2, 2, 2, 2, 2, 3};
 
     // Initialize the members for holding required input and result test data for individual example scenarios
     setupExampleDataCollections();
@@ -491,7 +494,14 @@ void Bmi_Multi_Formulation_Test::SetUp() {
     // Cases 4 and 5 Specifically to test output_variables failure cases...
     initializeTestExample(4, "cat-27", {std::string(BMI_FORTRAN_TYPE), std::string(BMI_PYTHON_TYPE)}, { "bogus_variable" });
     initializeTestExample(5, "cat-27", {std::string(BMI_FORTRAN_TYPE), std::string(BMI_PYTHON_TYPE)}, { "OUTPUT_VAR_1" });
-   
+
+    #if NGEN_WITH_BMI_C
+    initializeTestExample(6, "cat-27", {std::string(BMI_C_TYPE), std::string(BMI_FORTRAN_TYPE), std::string(BMI_PYTHON_TYPE)}, {"OUTPUT_VAR_1__0"}); // Output var from C module...
+    #else
+    initializeTestExample(6, "cat-27", {std::string(BMI_FORTRAN_TYPE), std::string(BMI_PYTHON_TYPE)}, {"OUTPUT_VAR_1__0"}); // Output var from Fortran module...
+    
+    #endif // NGEN_WITH_PYTHON
+    
 }
 
 /** Simple test to make sure the model config from example 0 initializes. */
@@ -585,6 +595,30 @@ TEST_F(Bmi_Multi_Formulation_Test, Initialize_3_c) {
     for (size_t i = 0; i < deferred.size(); ++i) {
         ASSERT_TRUE(deferred[i]->isWrappedProviderSet());
     }
+}
+
+/** With output_header_fields set (matching the output_variables count), the output header uses those
+ * configured labels instead of the variable names. */
+TEST_F(Bmi_Multi_Formulation_Test, Initialize_output_header_fields) {
+    int ex_index = 3;   // example 3 has 6 explicit output_variables
+
+    // Inject a matching-size output_header_fields array into the parsed config.
+    boost::property_tree::ptree props = config_prop_ptree[ex_index];
+    boost::property_tree::ptree headers;
+    const std::vector<std::string> labels = {"h0", "h1", "h2", "h3", "h4", "h5"};
+    for (const std::string& label : labels) {
+        boost::property_tree::ptree item;
+        item.put_value(label);
+        headers.push_back(std::make_pair("", item));
+    }
+    props.put_child("output_header_fields", headers);
+
+    Bmi_Multi_Formulation formulation(catchment_ids[ex_index], std::make_unique<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    formulation.create_formulation(props);
+
+    std::vector<std::string> names;
+    for (const auto& f : formulation.get_output_fields()) names.push_back(f.output_name);
+    EXPECT_EQ(names, labels);
 }
 
 /** Test to make sure the a non-existent variable name is not allowed in `output_variables` (see issue #535). */
@@ -745,8 +779,8 @@ TEST_F(Bmi_Multi_Formulation_Test, GetOutputLineForTimestep_0_a) {
     formulation.create_formulation(config_prop_ptree[ex_index]);
 
     formulation.get_response(0, 3600);
-    std::string output = formulation.get_output_line_for_timestep(0, ",");
-    ASSERT_EQ(output, "0.000000,200620.000000");
+    std::vector<double> output = formulation.get_output_values_for_timestep(0);
+    EXPECT_THAT(output, ::testing::Pointwise(::testing::DoubleNear(1e-15), std::vector<double>{0.0, 200620.0}));
 }
 
 /**
@@ -762,8 +796,8 @@ TEST_F(Bmi_Multi_Formulation_Test, GetOutputLineForTimestep_0_b) {
     while (i < 542)
         formulation.get_response(i++, 3600);
     formulation.get_response(i, 3600);
-    std::string output = formulation.get_output_line_for_timestep(i, ",");
-    ASSERT_EQ(output, "0.000001,199280.000000");
+    std::vector<double> output = formulation.get_output_values_for_timestep(i);
+    EXPECT_THAT(output, ::testing::Pointwise(::testing::DoubleNear(1e-15), std::vector<double>{1.1124674593096233e-06, 199280.0}));
 }
 
 /**
@@ -785,11 +819,11 @@ TEST_F(Bmi_Multi_Formulation_Test, GetOutputLineForTimestep_1_a) {
     std::vector<int> shape = {2,3};
     model_adapter->SetValue("grid_1_shape", shape.data());
     formulation.get_response(0, 3600);
-    std::string output = formulation.get_output_line_for_timestep(0, ",");
+    std::vector<double> output = formulation.get_output_values_for_timestep(0);
     //FIXME the last two outputs are the first value from the GRID_VAR in the python module...couldn't get the output variables
     //configured in the example realization generation to not query those, so hacked in here.  See comment above about not worrying about
     //initializing/using the grid vars in this test, and try to find a better way in the future.
-    ASSERT_EQ(output, "0.000000,200620.000000,1.000000,2.000000,3.000000");
+    EXPECT_THAT(output, ::testing::Pointwise(::testing::DoubleNear(1e-15), std::vector<double>{0.0, 200620.0, 1.0, 2.0, 3.0}));
 #endif // NGEN_WITH_PYTHON
 }
 
@@ -815,11 +849,11 @@ TEST_F(Bmi_Multi_Formulation_Test, GetOutputLineForTimestep_1_b) {
     while (i < 542)
         formulation.get_response(i++, 3600);
     formulation.get_response(i, 3600);
-    std::string output = formulation.get_output_line_for_timestep(i, ",");
+    std::vector<double> output = formulation.get_output_values_for_timestep(i);
     //FIXME the last two outputs are the first value from the GRID_VAR in the python module...couldn't get the output variables
     //configured in the example realization generation to not query those, so hacked in here.  See comment above about not worrying about
     //initializing/using the grid vars in this test, and try to find a better way in the future.
-    ASSERT_EQ(output, "0.000001,199280.000000,543.000000,2.000001,3.000001");
+    EXPECT_THAT(output, ::testing::Pointwise(::testing::DoubleNear(1e-15), std::vector<double>{1.1124674593096233e-06, 199280.0, 543.0, 2.0000011124674595, 3.0000011124674595}));
 #endif // NGEN_WITH_PYTHON
 }
 
@@ -836,8 +870,21 @@ TEST_F(Bmi_Multi_Formulation_Test, GetOutputLineForTimestep_3_a) {
     while (i < 542)
         formulation.get_response(i++, 3600);
     formulation.get_response(i, 3600);
-    std::string output = formulation.get_output_line_for_timestep(i, ",");
-    ASSERT_EQ(output, "0.000001112,199280.000000000,199240.000000000,199280.000000000,0.000000000,0.000001001");
+    std::vector<double> output = formulation.get_output_values_for_timestep(i);
+    EXPECT_THAT(output, ::testing::Pointwise(::testing::DoubleNear(1e-15), std::vector<double>{1.1124674593096233e-06, 199280.0, 199240.0, 199280.0, 0.0, 1.001327023947647e-06}));
+}
+
+/** The output header fields line up positionally with get_output_values_for_timestep -- i.e. they
+ *  match the configured output_variables in the same order (guards multi-module output ordering). */
+TEST_F(Bmi_Multi_Formulation_Test, OutputHeaderFieldsMatchConfiguredOrder_3) {
+    int ex_index = 3;
+
+    Bmi_Multi_Formulation formulation(catchment_ids[ex_index], std::make_unique<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    formulation.create_formulation(config_prop_ptree[ex_index]);
+
+    std::vector<std::string> names;
+    for (const auto& f : formulation.get_output_fields()) names.push_back(f.output_name);
+    EXPECT_EQ(names, specified_output_variables[ex_index]);
 }
 
 /**
@@ -884,6 +931,16 @@ TEST_F(Bmi_Multi_Formulation_Test, GetAvailableVariableNames) {
         );
     }
 }
+
+TEST_F(Bmi_Multi_Formulation_Test, MassBalanceCheck) {
+    int ex_index = 6;
+
+    Bmi_Multi_Formulation formulation(catchment_ids[ex_index], std::make_unique<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    formulation.create_formulation(config_prop_ptree[ex_index]);
+    
+    formulation.check_mass_balance(0, 1, "t0");
+}
+
 #endif // NGEN_WITH_BMI_C || NGEN_WITH_BMI_FORTRAN || NGEN_WITH_PYTHON
 
 #endif // NGEN_BMI_MULTI_FORMULATION_TEST_CPP
