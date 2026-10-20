@@ -6,6 +6,7 @@
 #include <utility>
 #include <vector>
 #include <memory>
+#include <boost/core/span.hpp>
 #include "Catchment_Formulation.hpp"
 #include "GenericDataProvider.hpp"
 
@@ -33,6 +34,7 @@
 #define BMI_REALIZATION_CFG_PARAM_OPT__CPP_DESTROY_FUNC "destroy_function"
 #define BMI_REALIZATION_CFG_PARAM_OPT__CPP_CREATE_FUNC_DEFAULT "bmi_model_create"
 #define BMI_REALIZATION_CFG_PARAM_OPT__CPP_DESTROY_FUNC_DEFAULT "bmi_model_destroy"
+#define BMI_REALIZATION_CFG_PARAM_OPT__CACHE_INPUT_VAR_METADATA "cache_input_variable_metadata"
 
 /* *************** See also the Forcing.h file for several CSDMS Standard Names definitions *************** */
 
@@ -139,24 +141,40 @@ namespace realization {
         }
 
         /**
-         * Get the values making up the header line from get_output_header_line(), but organized as a vector of strings.
+         * Get this formulation instance's compound identity.
          *
-         * @return The values making up the header line from get_output_header_line() organized as a vector.
+         * Default composition for a single-BMI formulation:
+         *   "<this->id>:<model_type_name>"             e.g. "cat-1:bmi_c_cfe"
+         *
+         * For a Bmi_Multi_Formulation submodule, `Bmi_Multi_Formulation`
+         * injects a three-part compound via `set_compound_id()` before
+         * `create_formulation()` runs:
+         *   "<this->id>:<submodule-mtn>:<multi-mtn>"   e.g. "cat-1.0:bmi_c_cfe:bmi_multi_noahowp_cfe"
+         *
+         * Uniqueness
+         * ------------------------------
+         * The composition is unique in practice: single-BMI keys are
+         * unique because `id` is a catchment identifier and one catchment
+         * has at most one realization; multi-submodule keys are unique
+         * because the submodule index suffix in `this->id` (e.g. the `.0`
+         * in `cat-1.0`) already disambiguates siblings even when two
+         * submodules share a `model_type_name`.
+         *
+         * One scenario that could break that assumption in the future:
+         * if the engine ever instantiates two *different* multi
+         * formulations for the same `id` (e.g. A/B comparison runs on
+         * the same catchment within a single process), the outer
+         * `<multi-mtn>` suffix becomes the sole discriminator and must
+         * actually differ. Callers would need to set distinct
+         * `model_type_name` values on the two multi formulations, or
+         * pass a unique string via `set_compound_id()`.
+         *
+         * @return The compound identity string, or the default composition
+         *         when `set_compound_id` was never called.
          */
-        const std::vector<std::string> &get_output_header_fields() const {
-            return output_header_fields;
-        }
-
-        /**
-         * Get a header line appropriate for a file made up of entries from this type's implementation of
-         * ``get_output_line_for_timestep``.
-         *
-         * Note that like the output generating function, this line does not include anything for time step.
-         *
-         * @return An appropriate header line for this type.
-         */
-        std::string get_output_header_line(std::string delimiter) const override {
-            return boost::algorithm::join(get_output_header_fields(), delimiter);
+        std::string compound_id() const {
+            if (!compound_id_.empty()) return compound_id_;
+            return id + ":" + model_type_name;
         }
 
         /**
@@ -206,25 +224,7 @@ namespace realization {
             *output_text_stream << std::setprecision(output_precision);
         }
 
-        /**
-         * Get value for some BMI model variable at a specific index.
-         *
-         * Function gets the value for a provided variable, returned from the backing model as an array, and returns the
-         * specific value at the desired index cast as a double type.
-         *
-         * The function makes several assumptions:
-         *
-         *     1. `index` is within array bounds
-         *     2. `var_name` is in the set of valid variable names for the model
-         *     3. the type for output variable allows the value to be cast to a `double` appropriately
-         *
-         * It falls to user (functions) of this function to ensure these assumptions hold before invoking.
-         *
-         * @param index
-         * @param var_name
-         * @return
-         */
-        virtual double get_var_value_as_double(const int& index, const std::string& var_name) = 0;
+        virtual void update(time_step_t t_index, time_step_t t_delta) = 0;
 
     protected:
 
@@ -248,8 +248,29 @@ namespace realization {
             model_type_name = std::move(type_name);
         }
 
+        /**
+         * Override this formulation's compound identity.
+         *
+         * Callable (notably `Bmi_Multi_Formulation` during
+         * submodule setup) when the default `compound_id()` composition
+         * isn't appropriate — e.g., to prepend multi-formulation context
+         * An empty string restores the default.
+         */
+        void set_compound_id(std::string id_string) {
+            compound_id_ = std::move(id_string);
+        }
+
         void set_output_header_fields(const std::vector<std::string> &output_headers) {
             output_header_fields = output_headers;
+        }
+
+        /**
+         * The configured/derived output header (display) field names, positionally parallel to
+         * @ref get_output_variable_names -- header i is the output name for variable i. A concrete
+         * subclass uses these as each column's output_name when building @ref get_output_fields.
+         */
+        boost::span<const std::string> get_output_header_field_names() const {
+            return output_header_fields;
         }
 
         /**
@@ -268,6 +289,9 @@ namespace realization {
 
         std::string bmi_main_output_var;
         std::string model_type_name;
+        /** Explicit compound identity override. Empty string signals the default
+         *  `<id>:<model_type_name>` in `compound_id()`. */
+        std::string compound_id_;
         /**
          * Output header field strings corresponding to the variables output by the realization, as defined in
          * `output_variable_names`.
