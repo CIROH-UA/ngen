@@ -6,6 +6,7 @@
 #include <memory>
 #include <sstream>
 #include <tuple>
+#include <utility>
 #include <functional>
 #include <dirent.h>
 #include <sys/stat.h>
@@ -14,9 +15,9 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <string>
+#include <iostream>
 
 #include <boost/property_tree/ptree.hpp>
-#include <boost/property_tree/json_parser.hpp>
 #include <FeatureBuilder.hpp>
 #include "features/Features.hpp"
 #include "Formulation_Constructors.hpp"
@@ -25,58 +26,38 @@
 #include "realizations/config/routing.hpp"
 #include "realizations/config/config.hpp"
 #include "realizations/config/layer.hpp"
+#include "realizations/config/output.hpp"
 
 namespace realization {
 
     class Formulation_Manager {
         public:
-
-            std::shared_ptr<Simulation_Time> Simulation_Time_Object;
-
-            Formulation_Manager(std::stringstream &data) {
-                boost::property_tree::ptree loaded_tree;
-                boost::property_tree::json_parser::read_json(data, loaded_tree);
-                this->tree = loaded_tree;
-            }
-
-            Formulation_Manager(const std::string &file_path) {
-                boost::property_tree::ptree loaded_tree;
-                boost::property_tree::json_parser::read_json(file_path, loaded_tree);
-                this->tree = loaded_tree;
-            }
-
-            Formulation_Manager(boost::property_tree::ptree &loaded_tree) {
-                this->tree = loaded_tree;
+            Formulation_Manager(boost::property_tree::ptree loaded_tree)
+                : tree(std::move(loaded_tree))
+            {
+                initialize_output_config();
             }
 
             ~Formulation_Manager() = default;
 
-            void read(geojson::GeoJSON fabric, utils::StreamHandler output_stream) {
+            void read(simulation_time_params &simulation_time_config,
+                      geojson::GeoJSON fabric, utils::StreamHandler output_stream) {
                 //TODO seperate the parsing of configuration options like time
                 //and routing and other non feature specific tasks from this main function
                 //which has to iterate the entire hydrofabric.
+
+                // Output configuration (output_config) is parsed at construction
+                // so get_output_config() is valid before read().
+
                 auto possible_global_config = tree.get_child_optional("global");
 
                 if (possible_global_config) {
                     global_config = realization::config::Config(*possible_global_config);
                 }
 
-                auto possible_simulation_time = tree.get_child_optional("time");
-
-                if (!possible_simulation_time) {
-                    throw std::runtime_error("ERROR: No simulation time period defined.");
-                }
-                config::Time time = config::Time(*possible_simulation_time);
-                auto simulation_time_config = time.make_params();
-                /**
-                 * Call constructor to construct a Simulation_Time object
-                 */ 
-                this->Simulation_Time_Object = std::make_shared<Simulation_Time>(simulation_time_config);
-
                 /**
                  * Read the layer descriptions
                 */
-
                 // try to get the json node
                 auto layers_json_array = tree.get_child_optional("layers");
                 //Create the default surface layer
@@ -96,10 +77,7 @@ namespace realization {
 
                         // add the layer to storage
                         layer_storage.put_layer(layer_desc, layer_desc.id);
-                        if(layer.has_formulation() && layer.get_domain()=="catchments"){
-                            double c_value = UnitsHelper::get_converted_value(layer_desc.time_step_units,layer_desc.time_step,"s");
-                            // make a new simulation time object with a different output interval
-                            Simulation_Time sim_time(*Simulation_Time_Object, c_value);
+                        if (layer.has_formulation() && layer.get_domain() == "catchments") {
                             domain_formulations.emplace(
                                 layer_desc.id,
                                 construct_formulation_from_config(simulation_time_config,
@@ -108,7 +86,6 @@ namespace realization {
                                 output_stream
                                 )
                             );
-                            domain_formulations.at(layer_desc.id)->set_output_stream(get_output_root() + layer_desc.name + "_layer_"+std::to_string(layer_desc.id) + ".csv");
                         }
                         //TODO for each layer, create deferred providers for use by other layers
                         //VERY SIMILAR TO NESTED MODULE INIT
@@ -137,8 +114,17 @@ namespace realization {
 
                 /**
                  * Read catchment configurations from configuration file
-                 */      
+                 */
                 auto possible_catchment_configs = tree.get_child_optional("catchments");
+
+                // For now at least, this isn't allowed
+                if (possible_catchment_configs &&
+                    output_config.nexus.format == realization::config::OutputFormat::netcdf) {
+                    std::string msg = "ERROR: Individual catchment formulation configs are not allowed when using "
+                                      "per-formulation nexus files.";
+                    std::cerr << msg;
+                    throw std::runtime_error(msg);
+                }
 
                 if (possible_catchment_configs) {
                     for (std::pair<std::string, boost::property_tree::ptree> catchment_config : *possible_catchment_configs) {
@@ -223,6 +209,11 @@ namespace realization {
                 return this->formulations.empty();
             }
 
+            //! The parsed output configuration block.
+            const realization::config::Output& get_output_config() const {
+                return output_config;
+            }
+
             typename std::map<std::string, std::shared_ptr<Catchment_Formulation>>::const_iterator begin() const {
                 return this->formulations.cbegin();
             }
@@ -253,102 +244,28 @@ namespace realization {
              *
              * In particular, this should be called before MPI_Finalize()
              */
-            void finalize() {
-                // The calls in these loops are staticly dispatched to
-                // Catchment_Formulation::finalize(). That does not
-                // inherit from DataProvider, with its virtual member
-                // function of the same name.
-                //
-                // If any formulation class needs to customize this
-                // behavior through this becoming a virtual dispatch,
-                // take care. Bmi_Multi_Formulation was a concern, but
-                // does not currently need to because none of its
-                // constituent formulations points to any forcing
-                // object other than the enclosing
-                // Bmi_Multi_Formulation instance itself.
-                for (auto const& fmap: formulations) {
-                    fmap.second->finalize();
-                }
-                for (auto const& fmap: domain_formulations) {
-                    fmap.second->finalize();
-                }
-
-#if NGEN_WITH_NETCDF
-                data_access::NetCDFPerFeatureDataProvider::cleanup_shared_providers();
-#endif
-            }
+            void finalize();
 
             /**
-             * @brief Get the formatted output root: check the existence of the output_root directory defined
-             * in realization. If true, return the directory name. Otherwise, try to create the directory
-             * or throw an error on failure.
-             *
-             * @code{.cpp}
-             * // Example config:
-             * // ...
-             * // "output_root": "/path/to/dir/"
-             * // ...
-             * const auto manager = Formulation_Manger(CONFIG);
-             * manager.get_output_root();
-             * //> "/path/to/dir/"
-             * @endcode
-             * 
-             * @return std::string of the output root directory
+             * Parse the output configuration from the realization tree (preferring
+             * the "output" block, falling back to the deprecated top-level keys),
+             * warn on deprecated usage, and validate build support. Called once at
+             * construction so output accessors are valid before read().
              */
-            std::string get_output_root() const {
-                const auto output_root = this->tree.get_optional<std::string>("output_root");
-                if (output_root != boost::none && *output_root != "") {
-                    // Check if the path ends with a trailing slash,
-                    // otherwise add it.
-                    std::string str = output_root->back() == '/'
-                           ? *output_root
-                           : *output_root + "/";
-
-                    const char* dir = str.c_str();
-
-                    //use C++ system function to check if there is a dir match that defined in realization
-                    struct stat sb;
-                    if (stat(dir, &sb) == 0 && S_ISDIR(sb.st_mode)) {
-                        return str;
-                    } else {
-                        errno = 0;
-                        int result = mkdir(dir, 0755);      
-                        if (result == 0)
-                            return str;
-                        else
-                            throw std::runtime_error("failed to create directory '" + str + "': " + std::strerror(errno));
-                    }
+            void initialize_output_config() {
+                output_config = realization::config::Output::from_realization(tree);
+                #if !NGEN_QUIET
+                if (output_config.from_legacy_keys) {
+                    std::cerr << "WARNING: top-level 'output_root', 'disable_catchment_output', and "
+                                 "'per_formulation_nexus_files' keys are deprecated; prefer an 'output' "
+                                 "config block (output.root / output.catchment / output.nexus)." << std::endl;
                 }
- 
-                //for case where there is no output_root in the realization file
-                return "./";
-
-            }
-
-             /**
-             * @brief Check if the formulation has catchment output writing enabled
-             *
-             * @code{.cpp}
-             * // Example config:
-             * // ...
-             * // "write_catchment_output": false
-             * // ...
-             * const auto manager = Formulation_Manger(CONFIG);
-             * manager.is_catchment_writing_enabled();
-             * //> false
-             * @endcode
-             * 
-             * @return bool
-             */
-            bool is_catchment_writing_enabled() const {
-                const auto write_enabled = this->tree.get_optional<std::string>("write_catchment_output");
-                if (write_enabled != boost::none && *write_enabled != "") {
-                    // if any variation of "false" or "no" or 0 is found, return false
-                    if (write_enabled->compare("false") == 0 || write_enabled->compare("no") == 0 || write_enabled->compare("0") == 0) {
-                        return false;
-                    }
-                } 
-                return true;
+                #endif
+                #if !NGEN_WITH_NETCDF
+                if (output_config.nexus.format == realization::config::OutputFormat::netcdf) {
+                    throw std::runtime_error("ERROR: nexus output format 'netcdf' requested, but NGEN was built without NetCDF support.");
+                }
+                #endif
             }
 
             /**
@@ -362,7 +279,7 @@ namespace realization {
             std::shared_ptr<Catchment_Formulation> construct_formulation_from_config(
                 simulation_time_params &simulation_time_config,
                 std::string identifier,
-                const realization::config::Config& catchment_formulation,
+                realization::config::Config& catchment_formulation,
                 utils::StreamHandler output_stream
             ) {
                 if(!formulation_exists(catchment_formulation.formulation.type)){
@@ -398,6 +315,10 @@ namespace realization {
                 std::shared_ptr<Catchment_Formulation> constructed_formulation = construct_formulation(catchment_formulation.formulation.type, identifier, forcing_config, output_stream);
                 //, geometry);
 
+                Catchment_Formulation::config_pattern_substitution(catchment_formulation.formulation.parameters,
+                                                                   BMI_REALIZATION_CFG_PARAM_REQ__INIT_CONFIG, "{{id}}",
+                                                                   identifier);
+
                 constructed_formulation->create_formulation(catchment_formulation.formulation.parameters);
                 return constructed_formulation;
             }
@@ -418,7 +339,7 @@ namespace realization {
                 // geojson::JSONProperty::print_property(global_config.formulation.parameters.at("modules"));
 
                 //Make a copy of the global configuration so parameters don't clash when linking to external data
-                auto formulation =  realization::config::Formulation(global_config.formulation);
+                auto formulation =  realization::config::Formulation(global_copy.formulation);
                 formulation.link_external(feature);
                 missing_formulation->create_formulation(formulation.parameters);
 
@@ -526,7 +447,6 @@ namespace realization {
                     errMsg = "Received system error number " + std::to_string(errno);
                     throw std::runtime_error("Error opening forcing data dir '" + path + "' after " + std::to_string(attemptCount) + " attempts: " + errMsg);
                 }
-
                 // Check if the file pattern is a file itself
                 std::ifstream possible_file(path + filepattern);
                 if (possible_file.good()) {
@@ -546,17 +466,20 @@ namespace realization {
                 while ((entry = readdir(directory))) {
                     match = std::regex_match(entry->d_name, pattern);
                     if( match ) {
+                        possible_file.clear();
                         possible_file.open(path + entry->d_name);
                         if (possible_file.good()) {
+                            std::string matched_file = entry->d_name;
                             possible_file.close();
                             closedir(directory);
                             return forcing_params(
-                                path + entry->d_name,
+                                path + matched_file,
                                 provider,
                                 simulation_time_config.start_time,
                                 simulation_time_config.end_time,
                                 enable_cache
                             );
+
                         }
                     }
                 }
@@ -703,7 +626,10 @@ namespace realization {
 
             bool using_routing = false;
 
+            realization::config::Output output_config;
+
             ngen::LayerDataStorage layer_storage;
+
     };
 }
 #endif // NGEN_FORMULATION_MANAGER_H
