@@ -158,7 +158,8 @@ double HY_PointHydroNexusRemote::get_downstream_flow(std::string catchment_id, t
         while ( stored_receives.size() > 0 )
     	{
     		process_communications();
-    		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    		if ( stored_receives.size() > 0 )
+    			std::this_thread::sleep_for(std::chrono::milliseconds(1));
     	}
     }
     
@@ -220,7 +221,8 @@ void HY_PointHydroNexusRemote::add_upstream_flow(double val, std::string catchme
 		    while ( stored_sends.size() > 0 )
 		    {
 		    	process_communications();  
-		    	std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		    	if ( stored_sends.size() > 0 )
+		    		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 		    }		
 		}
 	}
