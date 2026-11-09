@@ -83,6 +83,32 @@ TEST_F(NetCDFPerFeatureDataProviderTest, TestSharedProviderCacheModes)
     NetCDFPerFeatureDataProvider::cleanup_shared_providers();
 }
 
+// Cached and uncached reads must return the same values when the hinted ids are a
+// subset that does not start at the file's first row (as on every MPI rank but one).
+TEST_F(NetCDFPerFeatureDataProviderTest, TestCacheModesAgreeForHintedSubset)
+{
+    std::vector<std::string> ids = {"cat-52", "cat-67"};   // rows 1 and 2 of the file, not row 0
+
+    NetCDFPerFeatureDataProvider cached(forcing_file_name, forcing_p->simulation_start_t, forcing_p->simulation_end_t, utils::getStdErr(), true);
+    NetCDFPerFeatureDataProvider uncached(forcing_file_name, forcing_p->simulation_start_t, forcing_p->simulation_end_t, utils::getStdErr(), false);
+    for (const std::string& id: ids) {
+        cached.hint_shared_provider_id(id);
+        uncached.hint_shared_provider_id(id);
+    }
+
+    auto start_time = cached.get_data_start_time();
+    auto duration = cached.record_duration();
+
+    for (int step: {0, 1, 5, 23, 24, 100}) {
+        for (const std::string& id: ids) {
+            CatchmentAggrDataSelector sel(id, CSDMS_STD_NAME_SURFACE_TEMP, start_time + step * duration, duration, "K");
+            double expect = cached.get_value(sel, data_access::MEAN);
+            double result = uncached.get_value(sel, data_access::MEAN);
+            EXPECT_DOUBLE_EQ(result, expect) << id << " step " << step;
+        }
+    }
+}
+
 ///Test AORC Forcing Object
 TEST_F(NetCDFPerFeatureDataProviderTest, TestForcingDataReadUsingIds)
 {
