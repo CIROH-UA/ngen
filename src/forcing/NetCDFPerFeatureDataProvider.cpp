@@ -292,6 +292,7 @@ NetCDFPerFeatureDataProvider::NetCDFPerFeatureDataProvider(std::string input_pat
     for_each( string_buffers.begin(), string_buffers.end(), [&](char* str)
     {
         loc_ids.push_back(str);
+        nc_row[str] = loc;
         id_pos[str] = loc++;
     });
     // Make sure we were able to read an actual string type
@@ -590,8 +591,8 @@ double NetCDFPerFeatureDataProvider::get_value(const CatchmentAggrDataSelector& 
         c_idx2 = get_ts_index_for_time(this->stop_time-1); //to the edge
     }
 
-    // Save the original NetCDF catchment index before id_pos may be rebased
-    auto nc_cat_idx = id_pos.at(selector.get_id());
+    // The catchment's row in the NetCDF file; id_pos is rebased to internal cache indices by hints
+    auto nc_cat_idx = nc_row.at(selector.get_id());
 
     // update chunks during the first timestep
     if (hinted_ids.size() > 0){
