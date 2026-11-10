@@ -41,7 +41,8 @@ namespace utils
      *   dimensions: feature_id = <catchments>, time = UNLIMITED, feature_id_str_len = <longest id>
      *   char   feature_id(feature_id, feature_id_str_len)   the full catchment id, e.g. "cat-27"
      *   int64  time(time)                                   minutes since 1970-01-01 00:00:00
-     *   double <output_name>(feature_id, time)              one per OutputField, NaN fill
+     *   double <output_name>(feature_id, time)              one per OutputField, NaN fill,
+     *                                                       chunked (all catchments x N steps), shuffle + deflate
      *
      * Each variable carries the field's @c units (only when the source reports units, so an empty
      * units string is kept as an empty attribute), its @c source_name, and any extra @c attributes
@@ -67,6 +68,12 @@ namespace utils
         static constexpr const char *FEATURE_ID_STR_LEN_DIM = "feature_id_str_len";
         static constexpr const char *TIME_DIM = "time";
         static constexpr const char *TIME_UNITS = "minutes since 1970-01-01 00:00:00";
+        //! Values per chunk to aim for (32768 doubles = 256 KiB); a chunk is all catchments x N steps.
+        static constexpr std::size_t CHUNK_TARGET_VALUES = 32768;
+        //! Upper limit on the time steps in one chunk.
+        static constexpr std::size_t CHUNK_MAX_STEPS = 1024;
+        //! zlib level for the value variables (with the shuffle filter); 1-2 is fast with most of the gain.
+        static constexpr int DEFLATE_LEVEL = 2;
 
         /**
          * @param output_root The directory to write into, with a trailing slash (see

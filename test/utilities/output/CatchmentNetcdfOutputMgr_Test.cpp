@@ -162,6 +162,33 @@ TEST(CatchmentNetcdfOutputMgr_Test, AliasAndAttributes)
     std::filesystem::remove_all(dir);
 }
 
+// Chunks hold every catchment and many time steps (one-step chunks are tiny when a rank has few
+// catchments), and values are compressed with shuffle + deflate.
+TEST(CatchmentNetcdfOutputMgr_Test, ChunksSpanTimeAndAreCompressed)
+{
+    const auto dir = fresh_dir();
+    {
+        utils::CatchmentNetcdfOutputMgr mgr((dir / "").string(), "cat_output.nc",
+            { {"cat-1", {col("Q_OUT")}}, {"cat-2", {col("Q_OUT")}} });
+        mgr.close();
+    }
+
+    NcReader nc(dir / "cat_output.nc");
+    int storage;
+    std::size_t chunk[2];
+    ASSERT_EQ(nc_inq_var_chunking(nc.id, nc.var("Q_OUT"), &storage, chunk), NC_NOERR);
+    EXPECT_EQ(storage, NC_CHUNKED);
+    EXPECT_EQ(chunk[0], 2u);   // every catchment
+    EXPECT_EQ(chunk[1], utils::CatchmentNetcdfOutputMgr::CHUNK_MAX_STEPS);   // 32768 / 2 values, capped
+    int shuffle, deflate, level;
+    ASSERT_EQ(nc_inq_var_deflate(nc.id, nc.var("Q_OUT"), &shuffle, &deflate, &level), NC_NOERR);
+    EXPECT_EQ(shuffle, 1);
+    EXPECT_EQ(deflate, 1);
+    EXPECT_EQ(level, utils::CatchmentNetcdfOutputMgr::DEFLATE_LEVEL);
+
+    std::filesystem::remove_all(dir);
+}
+
 // A step that not every catchment reported is still written on close, with NaN for the missing one.
 TEST(CatchmentNetcdfOutputMgr_Test, IncompleteStepWrittenWithNaNOnClose)
 {

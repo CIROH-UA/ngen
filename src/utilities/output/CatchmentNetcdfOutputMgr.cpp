@@ -180,9 +180,14 @@ void CatchmentNetcdfOutputMgr::create_file(File &file, const std::vector<OutputF
     put_text_attribute(nc_id, file.time_var_id, "calendar", "gregorian", path);
     put_text_attribute(nc_id, file.time_var_id, "long_name", "Time", path);
 
-    // One chunk holds every catchment at one time step: that is exactly what each write covers.
+    // A chunk holds every catchment (each write covers one time step of all of them) and as many time
+    // steps as keep it near CHUNK_TARGET_VALUES: one-step chunks are tiny when a rank has few
+    // catchments, and HDF5's per-chunk overhead then outweighs the data. The partly filled chunk stays
+    // in HDF5's chunk cache between writes. Shuffle + deflate make the files smaller than the CSVs.
     const int value_dims[] = {feature_dim, time_dim};
-    const std::size_t chunk[] = {std::max<std::size_t>(n_cat, 1), 1};
+    const std::size_t chunk_catchments = std::max<std::size_t>(n_cat, 1);
+    const std::size_t chunk_steps = std::clamp<std::size_t>(CHUNK_TARGET_VALUES / chunk_catchments, 1, CHUNK_MAX_STEPS);
+    const std::size_t chunk[] = {chunk_catchments, chunk_steps};
     const double fill = std::numeric_limits<double>::quiet_NaN();
     for (const OutputField &field : fields) {
         int var_id;
@@ -190,6 +195,8 @@ void CatchmentNetcdfOutputMgr::create_file(File &file, const std::vector<OutputF
               "cannot define variable '" + field.output_name + "'", path);
         check(nc_def_var_chunking(nc_id, var_id, NC_CHUNKED, chunk),
               "cannot set chunking for variable '" + field.output_name + "'", path);
+        check(nc_def_var_deflate(nc_id, var_id, 1, 1, DEFLATE_LEVEL),
+              "cannot set compression for variable '" + field.output_name + "'", path);
         check(nc_def_var_fill(nc_id, var_id, NC_FILL, &fill),
               "cannot set the fill value of variable '" + field.output_name + "'", path);
         // Extra attributes first, so the units and source_name taken from the model are what remain.
