@@ -9,6 +9,7 @@ We follow the [Semantic Versioning 2.0.0](http://semver.org/) format.
 - An `output` configuration block for realization configs: `root`, per-domain (`catchment`/`nexus`) `enable`/`format`/`grouping`/`rank_subdir`, and a global value `precision`. See [Realization Configuration](doc/REALIZATION_CONFIGURATION.md#output).
 - Catchment output routed through a pluggable output manager (CSV backend), with an optional `grouping: per_formulation` that aggregates a formulation's catchments into one file with a leading `catchment_id` column (columns uniform per file by construction).
 - Per-domain `rank_subdir` option placing each MPI rank's CSV output under a `rank_<N>/` subdirectory (applied automatically for `per_formulation` under MPI).
+- NetCDF catchment output (`"format": "netcdf"` with `"grouping": "per_formulation"`): one `cat_output.nc` per formulation, with each variable's units from the model. Needs `-DNGEN_WITH_NETCDF=ON`.
 
 ### Deprecated
 

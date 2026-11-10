@@ -28,7 +28,7 @@ The configuration may optionally contain an `output` object that controls where 
 * `precision` — number of significant digits used when a text (CSV) backend renders values (default: `9`).
 * `catchment` and `nexus` — per-domain settings, each an object with:
   * `enable` — whether this domain's output is written (default: `true`; set `catchment.enable` to `false` to skip catchment files).
-  * `format` — serialization format, `"csv"` (default) or `"netcdf"`. NetCDF is currently supported for nexus output only.
+  * `format` — serialization format, `"csv"` (default) or `"netcdf"`. Catchment NetCDF output needs `"grouping": "per_formulation"` and an ngen build with `-DNGEN_WITH_NETCDF=ON`; it writes one `cat_output.nc` per formulation (per rank under MPI), with each variable's units from the model. 
   * `grouping` — how a domain's records are distributed across files (the file-*granularity* axis):
     * `"per_feature"` (default) — one file per catchment / per nexus.
     * `"per_formulation"` — the catchments of a formulation aggregate into one file with a leading `catchment_id` column (one file per formulation). Fewer, larger files, with columns uniform within each file by construction. (Nexus CSV aggregation is not yet implemented.)

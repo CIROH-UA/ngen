@@ -11,6 +11,10 @@
 #include "realizations/config/output.hpp"
 #include "utilities/output/CatchmentOutputsMgr.hpp"
 #include "utilities/output/CatchmentCsvOutputMgr.hpp"
+#include "utilities/output/CatchmentNetcdfOutputMgr.hpp"
+
+#include <NGenConfig.h>
+#include <filesystem>
 
 namespace realization
 {
@@ -33,13 +37,17 @@ namespace realization
          * (config parsing only normalizes the root -- it does not touch the filesystem). Each output
          * manager owns creating what it writes, so no caller need pre-create the directory.
          *
-         * Only the CSV format is implemented today; any other configured format is rejected here (the
-         * branch on @c output_config.catchment.format is where an added format would slot in). Layout
-         * follows the grouping: @c per_formulation aggregates each formulation's catchments into one
-         * file (leading catchment_id column) named @p aggregated_filename; @c per_feature writes one
-         * file per catchment.
+         * CSV layout follows the grouping: @c per_formulation aggregates each formulation's catchments
+         * into one file (leading catchment_id column) named @p aggregated_filename; @c per_feature
+         * writes one file per catchment.
          *
-         * @throw std::runtime_error if a catchment output format other than CSV is configured.
+         * NetCDF (built with NGEN_WITH_NETCDF) writes one file per formulation holding every catchment,
+         * with each variable's units, so it requires @c per_formulation grouping (which is also what
+         * gives each MPI rank its own rank_<N>/ directory, see @ref rank_output_root). The file is
+         * @p aggregated_filename with a ".nc" extension (cat_output.nc by default).
+         *
+         * @throw std::runtime_error for NetCDF output with per_feature grouping, or NetCDF output in a
+         *        build without NetCDF support.
          */
         inline std::shared_ptr<utils::CatchmentOutputsMgr> make_catchment_output_mgr(
                 const Output& output_config,
@@ -52,9 +60,23 @@ namespace realization
                     output_config.root,
                     aggregate ? std::optional<std::string>(aggregated_filename) : std::nullopt,
                     output_config.precision, std::move(descriptors));
-            } else {
-                throw std::runtime_error("Catchment output: only the CSV format is currently supported.");
             }
+            if (output_config.catchment.format == OutputFormat::netcdf) {
+                if (output_config.catchment.grouping != OutputGrouping::per_formulation) {
+                    throw std::runtime_error("Catchment output: the netcdf format writes one file per formulation "
+                                             "and requires \"grouping\": \"per_formulation\".");
+                }
+#if NGEN_WITH_NETCDF
+                return std::make_shared<utils::CatchmentNetcdfOutputMgr>(
+                    output_config.root,
+                    std::filesystem::path(aggregated_filename).replace_extension(".nc").string(),
+                    std::move(descriptors));
+#else
+                throw std::runtime_error("Catchment output: the netcdf format needs ngen built with NetCDF "
+                                         "support (NGEN_WITH_NETCDF).");
+#endif
+            }
+            throw std::runtime_error("Catchment output: unsupported output format.");
         }
     } // namespace config
 } // namespace realization

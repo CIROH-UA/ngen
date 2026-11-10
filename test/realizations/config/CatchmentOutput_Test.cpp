@@ -161,10 +161,44 @@ TEST(CatchmentOutput_Factory_Test, PrecisionFromConfigReachesWriter)
     EXPECT_EQ(lines[1], "0,t0,0.3333");   // 4 significant digits, not the default 9
 }
 
-// A non-CSV catchment output format is not implemented and is rejected.
-TEST(CatchmentOutput_Factory_Test, NonCsvFormatThrows)
+// NetCDF output holds every catchment of a formulation in one file, so per_feature grouping (the
+// default) is rejected rather than silently ignored.
+TEST(CatchmentOutput_Factory_Test, NetcdfWithPerFeatureGroupingThrows)
 {
     Output cfg;
     cfg.catchment.format = OutputFormat::netcdf;
-    EXPECT_THROW(make_catchment_output_mgr(cfg, {}), std::runtime_error);   // format rejected before use
+    EXPECT_THROW(make_catchment_output_mgr(cfg, {}), std::runtime_error);   // rejected before use
 }
+
+#if NGEN_WITH_NETCDF
+// netcdf + per_formulation -> one NetCDF file named after the aggregated file name, with a .nc
+// extension (cat_output.nc), and no CSV.
+TEST(CatchmentOutput_Factory_Test, NetcdfPerFormulationSelectsNetcdfFile)
+{
+    namespace fs = std::filesystem;
+    const std::string root = fresh_root();
+
+    std::stringstream ss(std::string("{\"output\":{\"root\":\"") + root
+        + "\",\"catchment\":{\"format\":\"netcdf\",\"grouping\":\"per_formulation\"}}}");
+    boost::property_tree::ptree tree;
+    boost::property_tree::json_parser::read_json(ss, tree);
+    {
+        auto mgr = make_catchment_output_mgr(Output::from_realization(tree),
+                                             { {"cat-1", {col("Q_OUT")}}, {"cat-2", {col("Q_OUT")}} });
+        mgr->close();
+    }
+
+    EXPECT_TRUE(fs::exists(root + "cat_output.nc"));
+    EXPECT_FALSE(fs::exists(root + "cat_output.csv"));
+    EXPECT_FALSE(fs::exists(root + "cat-1.csv"));
+}
+#else
+// Without NetCDF support, netcdf + per_formulation is reported as a build limitation.
+TEST(CatchmentOutput_Factory_Test, NetcdfWithoutNetcdfSupportThrows)
+{
+    Output cfg;
+    cfg.catchment.format = OutputFormat::netcdf;
+    cfg.catchment.grouping = realization::config::OutputGrouping::per_formulation;
+    EXPECT_THROW(make_catchment_output_mgr(cfg, {}), std::runtime_error);
+}
+#endif
