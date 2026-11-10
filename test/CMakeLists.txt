@@ -270,6 +270,17 @@ ngen_add_test(
         NGen::output
 )
 
+########################## Catchment NetCDF Output Manager Tests
+ngen_add_test(
+    test_catchment_netcdf_output_mgr
+    OBJECTS
+        utilities/output/CatchmentNetcdfOutputMgr_Test.cpp
+    LIBRARIES
+        NGen::output
+    REQUIRES
+        NGEN_WITH_NETCDF
+)
+
 ########################## MPI Remote Nexus Tests
 ngen_add_test(
     test_remote_nexus

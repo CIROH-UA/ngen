@@ -22,9 +22,14 @@ target_include_directories(ngen_output PUBLIC
         ${PROJECT_SOURCE_DIR}/include/utilities/output
 )
 
+# NGenConfig.h: catchment_output.hpp and CatchmentNetcdfOutputMgr.hpp test NGEN_WITH_NETCDF from it.
+target_link_libraries(ngen_output PUBLIC NGen::config_header)
+
 if(NGEN_WITH_NETCDF)
     target_compile_definitions(ngen_output PUBLIC NGEN_WITH_NETCDF)
-    target_sources(ngen_output PRIVATE "${CMAKE_CURRENT_LIST_DIR}/PerFormulationNexusOutputMgr.cpp")
+    target_sources(ngen_output PRIVATE
+        "${CMAKE_CURRENT_LIST_DIR}/PerFormulationNexusOutputMgr.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/CatchmentNetcdfOutputMgr.cpp")
     target_link_libraries(ngen_output PUBLIC NetCDF)
     if (NGEN_WITH_MPI)
        target_link_libraries(ngen_output PUBLIC MPI::MPI_CXX)
