@@ -163,6 +163,7 @@ namespace data_access
         std::vector<double> time_vals;
         std::set<std::string> hinted_ids;
         std::map<std::string, std::size_t> id_pos;      // map from cat-id to position in vec of nc var values; accounts for chunking
+        std::map<std::string, std::size_t> nc_row;      // map from cat-id to its row in the NetCDF "catchment-id" dim; never rebased
         std::vector<std::pair<size_t, size_t>> chunks;  // a chunk is the start and length of a span in the "catchment-id" dim of a nc variable
         double start_time;                              // the begining of the first time for which data is stored
         double stop_time;                               // the end of the last time for which data is stored

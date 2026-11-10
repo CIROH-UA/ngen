@@ -20,4 +20,4 @@ We follow the [Semantic Versioning 2.0.0](http://semver.org/) format.
 
 ### Fixed
 
-- Nothing.
+- NetCDF forcing with `enable_cache: false` read other catchments' rows on every MPI rank but one: the uncached read used the hint-rebased index as the file row (`NetCDFPerFeatureDataProvider::get_value`).
